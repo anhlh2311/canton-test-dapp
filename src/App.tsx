@@ -280,6 +280,11 @@ function App() {
   const isConnected = statusEvent?.connection?.isConnected ?? false;
   const isNetworkConnected = statusEvent?.connection?.isNetworkConnected ?? false;
   const primaryParty = accounts.find((a) => a.primary)?.partyId;
+  // Canonical source of the connected user's Ed25519 public key. Sourced from
+  // `Wallet.publicKey` on listAccounts / accountsChanged, NOT from the
+  // signMessage response — CIP-0103 mandates signMessage returns just
+  // { signature }. Cleared on disconnect because `accounts` is set to [].
+  const primaryPubKey = accounts.find((a) => a.primary)?.publicKey;
 
   const addLog = useCallback((type: LogEntry['type'], message: string) => {
     const id = ++logId;
@@ -497,14 +502,17 @@ function App() {
     }
   }
 
-  function extractSignatureFromResponse(raw: unknown): { signature: string; publicKey?: string } {
+  // CIP-0103 spec: result is `{ signature: string }`. Pre-spec Ginkgo builds
+  // returned `{ signature, publicKey, fingerprint }`; older raw-RPC paths return
+  // a bare string. We accept all three shapes but only read `signature` —
+  // `publicKey` is sourced from listAccounts (see primaryPubKey).
+  function extractSignatureFromResponse(raw: unknown): { signature: string } {
     if (typeof raw === 'string') return { signature: raw };
     if (raw && typeof raw === 'object') {
       const obj = raw as Record<string, unknown>;
       const signature = typeof obj.signature === 'string' ? obj.signature : '';
-      const publicKey = typeof obj.publicKey === 'string' ? obj.publicKey : undefined;
       if (!signature) throw new Error(`No signature in response: ${JSON.stringify(raw)}`);
-      return { signature, publicKey };
+      return { signature };
     }
     throw new Error(`Unexpected signMessage response: ${JSON.stringify(raw)}`);
   }
@@ -529,23 +537,30 @@ function App() {
         if (!extensionDetected) throw new Error('Extension not detected — Raw RPC requires the extension');
         raw = await rpcRequest('signMessage', { message });
       }
-      const { signature, publicKey } = extractSignatureFromResponse(raw);
+      const { signature } = extractSignatureFromResponse(raw);
       const id = ++signId;
-      // Pre-fill verify pubKey: prefer one returned by the wallet, fall back to
-      // the primary account's publicKey from listAccounts (Canton wallets always
-      // expose this on the Wallet record).
-      const prefillPubKey = publicKey ?? accounts.find((a) => a.primary)?.publicKey ?? '';
+      // Per CIP-0103, the response is just { signature } — publicKey comes from
+      // the cached primary account (sourced from listAccounts / accountsChanged).
+      const cachedPubKey = primaryPubKey ?? '';
       setSignedMessages((prev) => [
-        { id, timestamp: new Date(), message, signature, mode: signMode, publicKey, rawResponse: raw },
+        {
+          id,
+          timestamp: new Date(),
+          message,
+          signature,
+          mode: signMode,
+          publicKey: cachedPubKey || undefined,
+          rawResponse: raw,
+        },
         ...prev,
       ]);
-      if (prefillPubKey) {
-        setVerifyState((prev) => ({ ...prev, [id]: { publicKey: prefillPubKey, result: null } }));
+      if (cachedPubKey) {
+        setVerifyState((prev) => ({ ...prev, [id]: { publicKey: cachedPubKey, result: null } }));
       }
       addLog(
         'success',
         `${tag} signMessage → ${signature.slice(0, 32)}...` +
-          (publicKey ? ' (pubKey from wallet)' : prefillPubKey ? ' (pubKey from listAccounts)' : ''),
+          (cachedPubKey ? ' (pubKey from listAccounts cache)' : ' (no cached primary pubKey)'),
       );
     } catch (e) {
       addLog('error', `signMessage failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -949,7 +964,7 @@ function App() {
                         </div>
                         {s.publicKey && (
                           <div className="sign-row">
-                            <span className="sign-row-label">pubKey (from wallet):</span>
+                            <span className="sign-row-label">pubKey (cached):</span>
                             <code className="sign-row-value wrap">{s.publicKey}</code>
                           </div>
                         )}
