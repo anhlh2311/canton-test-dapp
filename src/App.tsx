@@ -769,6 +769,74 @@ function App() {
     }
   }
 
+  // Read-path helper that works for both extension wallets (proxy through
+  // canton_ledgerApi) and WalletConnect mobile wallets (call the Canton Ledger
+  // API directly with the URL + Bearer token the wallet hands back via
+  // canton_status / canton_getActiveNetwork).
+  //
+  // Try the proxy first — it's the spec-default and is what Ginkgo/extensions
+  // expect. If the wallet returns 4100 "Access denied for ledger resource"
+  // (common for /v2/state/* paths on restricted WC mobile wallets), fall back
+  // to a direct HTTP fetch using statusEvent.network.{ledgerApi, accessToken}.
+  async function callLedgerApi(
+    method: 'get' | 'post',
+    resource: string,
+    bodyParam?: unknown,
+  ): Promise<{ response: string }> {
+    try {
+      const r = (await sdk.ledgerApi({
+        requestMethod: method,
+        resource,
+        // sdk types narrow body to a specific shape; relax for arbitrary JSON.
+        body: bodyParam as never,
+      })) as Record<string, unknown>;
+      const response =
+        typeof r?.response === 'string' ? (r.response as string) : JSON.stringify(r);
+      return { response };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const isAccessDenied = /\b4100\b|access denied|denied for ledger resource/i.test(msg);
+      if (!isAccessDenied) throw e;
+
+      const ledgerUrl = statusEvent?.network?.ledgerApi;
+      const token = statusEvent?.network?.accessToken;
+      if (!ledgerUrl) {
+        throw new Error(
+          `Wallet denied ${resource} via canton_ledgerApi AND did not expose statusEvent.network.ledgerApi for a direct-HTTP fallback`,
+        );
+      }
+      addLog(
+        'info',
+        `[Ledger] Proxy denied ${resource} (${msg}); falling back to direct HTTP at ${ledgerUrl}`,
+      );
+
+      const url = `${ledgerUrl.replace(/\/$/, '')}${resource.startsWith('/') ? resource : '/' + resource}`;
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      if (method === 'post') headers['Content-Type'] = 'application/json';
+      let res: Response;
+      try {
+        res = await fetch(url, {
+          method: method.toUpperCase(),
+          headers,
+          body: method === 'post' && bodyParam !== undefined ? JSON.stringify(bodyParam) : undefined,
+        });
+      } catch (fetchErr) {
+        // Bare fetch failure is almost always CORS on the ledger gateway.
+        throw new Error(
+          `Direct HTTP to ${url} failed (likely CORS — the ledger gateway must allow origin ${window.location.origin}): ${
+            fetchErr instanceof Error ? fetchErr.message : String(fetchErr)
+          }`,
+        );
+      }
+      const text = await res.text();
+      if (!res.ok) {
+        throw new Error(`Direct HTTP ${res.status} ${res.statusText}: ${text.slice(0, 200)}`);
+      }
+      return { response: text };
+    }
+  }
+
   async function handleQueryBalance() {
     if (!primaryParty) {
       addLog('error', '[Balance] No primary party — wait for accounts to load');
@@ -811,7 +879,7 @@ function App() {
     let activeAtOffset: number | string | undefined = undefined;
     try {
       addLog('info', '[Balance] GET /v2/state/ledger-end');
-      const endResp = await sdk.ledgerApi({ requestMethod: 'get', resource: '/v2/state/ledger-end' });
+      const endResp = await callLedgerApi('get', '/v2/state/ledger-end');
       const endData = body(endResp);
       addLog('info', `[Balance] ledger-end → ${JSON.stringify(endData).slice(0, 200)}`);
       activeAtOffset = extractOffset(endData);
@@ -853,11 +921,7 @@ function App() {
           activeAtOffset === undefined ? '(no activeAtOffset)' : `(activeAtOffset=${activeAtOffset})`
         }`,
       );
-      const acsResp = await sdk.ledgerApi({
-        requestMethod: 'post',
-        resource: '/v2/state/active-contracts',
-        body: acsBody,
-      });
+      const acsResp = await callLedgerApi('post', '/v2/state/active-contracts', acsBody);
       const rawResponse =
         typeof (acsResp as Record<string, unknown>)?.response === 'string'
           ? ((acsResp as Record<string, unknown>).response as string)
