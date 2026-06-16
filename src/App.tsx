@@ -11,6 +11,27 @@ const WC_PROPOSED_CHAINS = ((import.meta.env.VITE_CANTON_CHAIN_ID as string | un
   .map((s) => s.trim())
   .filter(Boolean);
 
+// Public Splice Scan API URLs per Canton network. Used as a fallback for
+// balance queries when the wallet denies canton_ledgerApi proxy and doesn't
+// expose ledger URL / custom balance methods (typical for restricted WC
+// mobile wallets like askardex-wallet). Override with VITE_SCAN_API_URL.
+//
+// DA mainnet SVs are listed in splice-wallet-kernel/api-specs/assets.json.
+// We pick sync.global as the default — switch via env var if CORS rejects.
+const KNOWN_SCAN_URLS_BY_NETWORK: Record<string, string> = {
+  'canton:da-mainnet': 'https://scan.sv-1.global.canton.network.sync.global/api/scan',
+  'canton:da-devnet': 'https://scan.sv-1.dev.global.canton.network.sync.global/api/scan',
+  'canton:da-testnet': 'https://scan.sv-1.test.global.canton.network.sync.global/api/scan',
+};
+
+function getConfiguredScanUrl(networkId: string | undefined): string | undefined {
+  const envOverride = (import.meta.env.VITE_SCAN_API_URL as string | undefined)?.trim();
+  if (envOverride) return envOverride.replace(/\/$/, '');
+  if (!networkId) return undefined;
+  const known = KNOWN_SCAN_URLS_BY_NETWORK[networkId];
+  return known ? known.replace(/\/$/, '') : undefined;
+}
+
 // ============================================================
 // Log infrastructure
 // ============================================================
@@ -910,6 +931,90 @@ function App() {
     return null;
   }
 
+  // Splice Scan API balance flow (public, no wallet involvement).
+  // Two GETs against `<scanUrl>/v0/...`:
+  //   1. /v0/closed-rounds  → array of recent closed mining rounds (latest is what
+  //                            we need; the deprecated /v0/wallet-balance is
+  //                            "balance as of end of round N")
+  //   2. /v0/wallet-balance?party_id=...&asOfEndOfRound=N
+  //
+  // Defensive about response shapes — closed-rounds might be a JSON array,
+  // an object with `closed_rounds`, or wrapped in ContractWithState envelopes.
+  async function queryBalanceViaScan(scanUrl: string, partyId: string): Promise<AmuletBalance & { asOfEndOfRound: number }> {
+    const fetchJson = async (url: string): Promise<unknown> => {
+      let res: Response;
+      try {
+        res = await fetch(url);
+      } catch (e) {
+        throw new Error(
+          `Scan API fetch failed (likely CORS — origin ${window.location.origin} must be allowed by ${new URL(scanUrl).origin}): ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
+      const text = await res.text();
+      if (!res.ok) throw new Error(`${url} → HTTP ${res.status}: ${text.slice(0, 200)}`);
+      try { return JSON.parse(text); } catch { return text; }
+    };
+
+    addLog('info', `[Balance] Scan: GET ${scanUrl}/v0/closed-rounds`);
+    const roundsResp = await fetchJson(`${scanUrl}/v0/closed-rounds`);
+    const roundsArr =
+      Array.isArray(roundsResp)
+        ? roundsResp
+        : (roundsResp as Record<string, unknown> | null)?.closed_rounds ??
+          (roundsResp as Record<string, unknown> | null)?.rounds ??
+          [];
+    if (!Array.isArray(roundsArr) || roundsArr.length === 0) {
+      throw new Error(`No closed rounds in response: ${JSON.stringify(roundsResp).slice(0, 200)}`);
+    }
+    // Pick the highest round number. Each entry might be a ContractWithState
+    // ({contract:{payload:{round:{number:"42"}}}}) or a flatter shape — probe.
+    const extractRoundNumber = (entry: unknown): number | null => {
+      if (entry === null || entry === undefined) return null;
+      if (typeof entry === 'number') return entry;
+      if (typeof entry === 'string') { const n = Number(entry); return Number.isFinite(n) ? n : null; }
+      if (typeof entry !== 'object') return null;
+      const e = entry as Record<string, unknown>;
+      const payload =
+        ((e.contract as Record<string, unknown> | undefined)?.payload as Record<string, unknown> | undefined) ??
+        (e.payload as Record<string, unknown> | undefined) ??
+        e;
+      const round =
+        (payload?.round as Record<string, unknown> | undefined) ??
+        (payload as Record<string, unknown> | undefined);
+      const num = round?.number ?? round?.round ?? payload?.round_number;
+      if (num === undefined || num === null) return null;
+      const n = Number(num);
+      return Number.isFinite(n) ? n : null;
+    };
+    const roundNumbers = roundsArr.map(extractRoundNumber).filter((n): n is number => n !== null);
+    if (roundNumbers.length === 0) {
+      throw new Error(`Could not extract round numbers from: ${JSON.stringify(roundsArr).slice(0, 300)}`);
+    }
+    const asOfEndOfRound = Math.max(...roundNumbers);
+    addLog('info', `[Balance] Latest closed round: ${asOfEndOfRound}`);
+
+    const balanceUrl = `${scanUrl}/v0/wallet-balance?party_id=${encodeURIComponent(partyId)}&asOfEndOfRound=${asOfEndOfRound}`;
+    addLog('info', `[Balance] Scan: GET ${balanceUrl}`);
+    const balanceResp = await fetchJson(balanceUrl) as Record<string, unknown>;
+    const raw = balanceResp?.wallet_balance;
+    if (raw === undefined || raw === null) {
+      throw new Error(`No wallet_balance in response: ${JSON.stringify(balanceResp).slice(0, 200)}`);
+    }
+    const amountStr = String(raw);
+    const total = Number(amountStr);
+    if (!Number.isFinite(total)) throw new Error(`Invalid wallet_balance value: ${amountStr}`);
+
+    return {
+      total,
+      contractCount: 1,
+      amounts: [amountStr],
+      queriedAt: new Date(),
+      asOfEndOfRound,
+    };
+  }
+
   async function handleQueryBalance() {
     if (!primaryParty) {
       addLog('error', '[Balance] No primary party — wait for accounts to load');
@@ -942,12 +1047,27 @@ function App() {
           }
         }
         if (!hit) {
-          addLog(
-            'error',
-            `[Balance] No probed method succeeded on this WC wallet. Candidates tried: ${WC_BALANCE_PROBE_METHODS.join(
-              ', ',
-            )}. If your wallet uses a different method name, let me know and I'll add it.`,
-          );
+          // Wallet method probe exhausted — try public Splice Scan API instead.
+          const networkId = statusEvent?.network?.networkId;
+          const scanUrl = getConfiguredScanUrl(networkId);
+          if (!scanUrl) {
+            addLog(
+              'error',
+              `[Balance] No probed method succeeded and no Scan API URL for network "${networkId ?? 'unknown'}". Set VITE_SCAN_API_URL in .env.local to enable the Scan fallback.`,
+            );
+            return;
+          }
+          addLog('info', `[Balance] Wallet has no balance method; falling back to Splice Scan API at ${scanUrl}`);
+          try {
+            const scanned = await queryBalanceViaScan(scanUrl, primaryParty);
+            setBalance(scanned);
+            addLog(
+              'success',
+              `[Balance] via Scan API (asOfEndOfRound=${scanned.asOfEndOfRound}): total = ${scanned.total}`,
+            );
+          } catch (scanErr) {
+            addLog('error', `[Balance] Scan API failed: ${scanErr instanceof Error ? scanErr.message : String(scanErr)}`);
+          }
           return;
         }
         const parsed = extractBalanceFromWalletResponse(hit.result);
