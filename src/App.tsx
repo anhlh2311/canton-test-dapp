@@ -222,6 +222,36 @@ interface AmuletBalance {
   queriedAt: Date;
 }
 
+// Splice network context discovered from /v0/dso. Required to fill in the
+// `expectedAdmin` and `instrumentId.admin` (DSO party) fields and the
+// AmuletRules contract id for TransferFactory_Transfer commands.
+interface DiscoveredContext {
+  dsoPartyId: string;
+  amuletRulesCid?: string;
+  discoveredAt: Date;
+  source: 'wallet-proxy' | 'scan-direct';
+}
+
+function parseDsoInfo(body: unknown, source: DiscoveredContext['source']): DiscoveredContext {
+  if (!body || typeof body !== 'object') {
+    throw new Error(`/v0/dso returned non-object: ${JSON.stringify(body).slice(0, 200)}`);
+  }
+  const o = body as Record<string, unknown>;
+  const dsoPartyId = o.dso_party_id;
+  if (typeof dsoPartyId !== 'string' || !dsoPartyId) {
+    throw new Error(`/v0/dso missing dso_party_id: ${JSON.stringify(body).slice(0, 200)}`);
+  }
+  const amuletRules = o.amulet_rules as Record<string, unknown> | undefined;
+  const contract = amuletRules?.contract as Record<string, unknown> | undefined;
+  const amuletRulesCid =
+    typeof contract?.contract_id === 'string'
+      ? (contract.contract_id as string)
+      : typeof contract?.contractId === 'string'
+        ? (contract.contractId as string)
+        : undefined;
+  return { dsoPartyId, amuletRulesCid, discoveredAt: new Date(), source };
+}
+
 // JSON Ledger API's /v2/state/active-contracts response shape varies by Canton
 // version: sometimes a JSON array, sometimes NDJSON, sometimes wrapped in an
 // envelope object. Try each in turn so the consumer doesn't have to care.
@@ -335,6 +365,7 @@ function App() {
   // Ledger query/submit state
   const [queryResponses, setQueryResponses] = useState<Array<{ timestamp: Date; data: unknown }>>([]);
   const [balance, setBalance] = useState<AmuletBalance | null>(null);
+  const [discoveredContext, setDiscoveredContext] = useState<DiscoveredContext | null>(null);
   const [transferAmount, setTransferAmount] = useState('');
   const [transferReceiver, setTransferReceiver] = useState('');
   const [transferResult, setTransferResult] = useState<{ timestamp: Date; data: unknown } | null>(null);
@@ -1018,6 +1049,52 @@ function App() {
     };
   }
 
+  // Fetches Splice /v0/dso to discover the DSO party + AmuletRules contract id.
+  // Tries the wallet's canton_ledgerApi proxy first (which works for some
+  // gateways that whitelist scan paths too); falls back to direct HTTP against
+  // the configured Scan URL if the proxy is denied.
+  async function discoverContext(): Promise<DiscoveredContext> {
+    addLog('info', '[Discovery] Resolving DSO party + AmuletRules cid via /v0/dso...');
+    // Try the wallet proxy first — some gateways proxy /v0/* paths too.
+    try {
+      const resp = await sdk.ledgerApi({ requestMethod: 'get', resource: '/v0/dso' });
+      const r = resp as Record<string, unknown>;
+      const body =
+        typeof r.response === 'string'
+          ? JSON.parse(r.response as string)
+          : (r.response ?? r);
+      const ctx = parseDsoInfo(body, 'wallet-proxy');
+      addLog('info', `[Discovery] via wallet proxy → dso=${ctx.dsoPartyId.slice(0, 32)}..., amuletRulesCid=${ctx.amuletRulesCid?.slice(0, 24) ?? 'none'}...`);
+      return ctx;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      addLog('info', `[Discovery] wallet proxy /v0/dso failed (${msg.slice(0, 100)}); trying Scan API direct`);
+    }
+    // Fall back to direct HTTP against the configured Scan URL.
+    const scanUrl = getConfiguredScanUrl(statusEvent?.network?.networkId);
+    if (!scanUrl) {
+      throw new Error(
+        `Can't discover DSO: wallet rejected /v0/dso and no Scan URL is configured for network "${statusEvent?.network?.networkId ?? 'unknown'}". Set VITE_SCAN_API_URL in .env.local.`,
+      );
+    }
+    let res: Response;
+    try {
+      res = await fetch(`${scanUrl}/v0/dso`);
+    } catch (e) {
+      throw new Error(
+        `Scan API /v0/dso fetch failed (likely CORS — origin ${window.location.origin} must be allowed by ${new URL(scanUrl).origin}): ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
+    const text = await res.text();
+    if (!res.ok) throw new Error(`${scanUrl}/v0/dso → HTTP ${res.status}: ${text.slice(0, 200)}`);
+    const body = JSON.parse(text);
+    const ctx = parseDsoInfo(body, 'scan-direct');
+    addLog('info', `[Discovery] via Scan direct → dso=${ctx.dsoPartyId.slice(0, 32)}..., amuletRulesCid=${ctx.amuletRulesCid?.slice(0, 24) ?? 'none'}...`);
+    return ctx;
+  }
+
   async function handleQueryBalance() {
     if (!primaryParty) {
       addLog('error', '[Balance] No primary party — wait for accounts to load');
@@ -1026,6 +1103,13 @@ function App() {
     setLoading('balance');
     const providerType = statusEvent?.provider?.providerType;
     addLog('info', `[Balance] Querying for ${primaryParty} (provider: ${providerType ?? 'unknown'})...`);
+
+    // Best-effort context discovery in parallel — used by Transfer Amulet later.
+    // Failure here doesn't block the balance query.
+    discoverContext()
+      .then(setDiscoveredContext)
+      .catch((e) => addLog('info', `[Discovery] skipped: ${e instanceof Error ? e.message : String(e)}`));
+
 
     // Path A: WC mobile wallets — probe custom wallet methods. The standard
     // canton_ledgerApi is denied with 4100 for /v2/state/* on most WC wallets,
@@ -1229,6 +1313,22 @@ function App() {
     addLog('info', `[Transfer] CIP-0103 prepareExecute → ${amount} CC: ${primaryParty} → ${receiver}`);
 
     try {
+      // Make sure we have DSO + AmuletRules cid before sending. If the user
+      // hasn't queried balance yet, we discover on the fly here so the user
+      // can just click Send without any preamble.
+      let ctx = discoveredContext;
+      if (!ctx) {
+        addLog('info', '[Transfer] No cached context — running discovery first');
+        ctx = await discoverContext();
+        setDiscoveredContext(ctx);
+      }
+      if (!ctx.amuletRulesCid) {
+        addLog(
+          'info',
+          '[Transfer] DSO known but AmuletRules cid not in /v0/dso response — sending command without contractId, wallet may still resolve.',
+        );
+      }
+
       // CIP-0103 transaction lifecycle via sdk.prepareExecute():
       //   1. Dapp constructs the Daml command list.
       //   2. SDK forwards to wallet → wallet POSTs /v2/interactive-submission/prepare
@@ -1240,11 +1340,11 @@ function App() {
       //      txChanged event with the final status.
       //
       // Command: exercise Splice Token Standard's TransferFactory_Transfer choice.
-      // The wallet/gateway is expected to resolve the factory contract id, DSO
-      // (expectedAdmin), instrumentId.admin, and input holding cids — those are
-      // ledger-discovery details the dApp doesn't have direct access to under
-      // a restricted WC session. If the wallet doesn't auto-resolve, the error
-      // returned to this catch block will tell us which field is missing.
+      // expectedAdmin + instrumentId.admin come from /v0/dso discovery.
+      // contractId for the factory is best-effort: AmuletRules cid is the most
+      // likely candidate; the wallet may also have its own override.
+      // inputHoldingCids is left empty — the wallet/gateway is expected to pick
+      // unspent Amulets for the sender.
       const now = new Date();
       const command = {
         commands: [
@@ -1252,15 +1352,15 @@ function App() {
             ExerciseCommand: {
               templateId:
                 '#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferFactory',
-              contractId: '',
+              contractId: ctx.amuletRulesCid ?? '',
               choice: 'TransferFactory_Transfer',
               choiceArgument: {
-                expectedAdmin: '',
+                expectedAdmin: ctx.dsoPartyId,
                 transfer: {
                   sender: primaryParty,
                   receiver,
                   amount,
-                  instrumentId: { admin: '', id: 'Amulet' },
+                  instrumentId: { admin: ctx.dsoPartyId, id: 'Amulet' },
                   requestedAt: now.toISOString(),
                   executeBefore: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
                   inputHoldingCids: [],
@@ -1505,6 +1605,7 @@ function App() {
           balance={balance}
           balanceLoading={loading === 'balance'}
           onQueryBalance={handleQueryBalance}
+          discoveredContext={discoveredContext}
           transferAmount={transferAmount}
           transferReceiver={transferReceiver}
           transferResult={transferResult}
@@ -1824,6 +1925,7 @@ function AccountsTab({
   balance,
   balanceLoading,
   onQueryBalance,
+  discoveredContext,
   transferAmount,
   transferReceiver,
   transferResult,
@@ -1838,6 +1940,7 @@ function AccountsTab({
   balance: AmuletBalance | null;
   balanceLoading: boolean;
   onQueryBalance: () => void;
+  discoveredContext: DiscoveredContext | null;
   transferAmount: string;
   transferReceiver: string;
   transferResult: { timestamp: Date; data: unknown } | null;
@@ -1961,8 +2064,34 @@ function AccountsTab({
           prepares (computes hash) → wallet asks user for approval → wallet signs
           → wallet submits to the ledger. The command exercises{' '}
           <code>TransferFactory_Transfer</code> on the Splice Token Standard
-          transfer-instruction interface.
+          transfer-instruction interface, using DSO + AmuletRules discovered from{' '}
+          <code>/v0/dso</code>.
         </p>
+        {discoveredContext ? (
+          <div className="context-box">
+            <div className="account-row account-row-meta">
+              <span className="account-label">DSO party:</span>
+              <code className="account-value wrap">{discoveredContext.dsoPartyId}</code>
+              <button className="sign-copy" onClick={() => onCopy(discoveredContext.dsoPartyId, 'DSO party')}>Copy</button>
+            </div>
+            <div className="account-row account-row-meta">
+              <span className="account-label">AmuletRules cid:</span>
+              <code className="account-value wrap">{discoveredContext.amuletRulesCid ?? '(not in /v0/dso response)'}</code>
+              {discoveredContext.amuletRulesCid && (
+                <button className="sign-copy" onClick={() => onCopy(discoveredContext.amuletRulesCid as string, 'AmuletRules cid')}>Copy</button>
+              )}
+            </div>
+            <div className="account-row account-row-meta">
+              <span className="account-label">Source:</span>
+              <code className="account-value">{discoveredContext.source}</code>
+              <span className="account-value account-row-meta">at {discoveredContext.discoveredAt.toLocaleTimeString()}</span>
+            </div>
+          </div>
+        ) : (
+          <p className="hint balance-empty">
+            DSO not yet discovered — runs automatically on first Send, or as a side-effect of Query Wallet Balance.
+          </p>
+        )}
         <div className="transfer-form">
           <div className="transfer-field">
             <label htmlFor="transfer-amount">Amount (CC)</label>

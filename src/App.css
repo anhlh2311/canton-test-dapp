@@ -397,6 +397,18 @@ pre {
   color: #888;
 }
 
+/* Discovered network context */
+.context-box {
+  background: #12141c;
+  border: 1px solid #2a2d3a;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 10px 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 /* Transfer Amulet form */
 .transfer-form {
   display: flex;
