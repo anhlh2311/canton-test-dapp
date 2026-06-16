@@ -186,6 +186,30 @@ export class CantonWcAdapter {
     return this;
   }
 
+  // ── Public escape hatch ──────────────────────────────────────────
+
+  /**
+   * Send an arbitrary WC method to the wallet, bypassing the CIP-0103
+   * `canton_` prefix that {@link wcRequest} adds. Use this to probe for
+   * wallet-specific extension methods (e.g. `canton_getBalance`) that aren't
+   * part of the standard CANTON_WC_METHODS list. The exact method string you
+   * pass is what's sent on the wire — include any `canton_` / `splice_` /
+   * `wallet_` prefix yourself.
+   *
+   * Errors propagate verbatim from `signClient.request`, so callers can probe
+   * a list of candidates and pick whichever doesn't throw.
+   */
+  async rawRequest(method: string, params?: unknown): Promise<unknown> {
+    if (!this.signClient || !this.session || !this.chainId) {
+      throw new Error('WalletConnect session not established');
+    }
+    return this.signClient.request({
+      topic: this.session.topic,
+      chainId: this.chainId,
+      request: { method, params: params ?? {} },
+    });
+  }
+
   // ── Internals ────────────────────────────────────────────────────
 
   private async wcRequest(method: string, params: unknown): Promise<unknown> {

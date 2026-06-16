@@ -837,13 +837,148 @@ function App() {
     }
   }
 
+  // Candidate wallet-side methods to probe for direct balance reads on
+  // WC mobile wallets. These aren't in the CIP-0103 standard, but specific
+  // wallet implementations (Splice-CN-style backends) may expose one of them.
+  // We probe each via signClient.request and use whichever doesn't throw.
+  const WC_BALANCE_PROBE_METHODS = [
+    'canton_getBalance',
+    'canton_getAmuletBalance',
+    'canton_getWalletBalance',
+    'canton_listAmulets',
+    'canton_listHoldings',
+    'splice_getBalance',
+    'splice_listHoldings',
+  ];
+
+  // Walk a heterogeneous wallet response looking for the first plausible
+  // balance-like number. Handles:
+  //   - { balance: "123.45" } or { balance: 123.45 }
+  //   - { total: ... }, { amount: ... }, { totalAmount: ... }
+  //   - { balances: [{ amount, instrumentId: {id: "Amulet"} }, ...] }
+  //   - { amulets: [{ amount: { initialAmount } }, ...] }
+  //   - { holdings: [{ amount: ... }, ...] }
+  // Returns { total, contractCount?, amounts[] } or null if nothing matches.
+  function extractBalanceFromWalletResponse(result: unknown): {
+    total: number;
+    amounts: string[];
+  } | null {
+    if (result === null || result === undefined) return null;
+    if (typeof result === 'string') {
+      const n = Number(result);
+      return Number.isFinite(n) ? { total: n, amounts: [result] } : null;
+    }
+    if (typeof result === 'number') return { total: result, amounts: [String(result)] };
+    if (typeof result !== 'object') return null;
+    const obj = result as Record<string, unknown>;
+
+    // Direct scalar fields.
+    for (const k of ['balance', 'total', 'amount', 'totalAmount', 'totalBalance', 'walletBalance']) {
+      const v = obj[k];
+      if (typeof v === 'string' || typeof v === 'number') {
+        const n = Number(v);
+        if (Number.isFinite(n)) return { total: n, amounts: [String(v)] };
+      }
+    }
+
+    // Array-shaped (amulets / holdings / balances).
+    for (const k of ['amulets', 'holdings', 'balances', 'contracts', 'data']) {
+      const v = obj[k];
+      if (!Array.isArray(v)) continue;
+      const amounts: string[] = [];
+      let total = 0;
+      for (const item of v) {
+        if (item === null || typeof item !== 'object') continue;
+        const it = item as Record<string, unknown>;
+        // Try common amount locations.
+        const rawAmt =
+          (it.amount && typeof it.amount === 'object'
+            ? ((it.amount as Record<string, unknown>).initialAmount ?? (it.amount as Record<string, unknown>).amount)
+            : it.amount) ??
+          it.balance ??
+          it.total ??
+          it.value;
+        if (rawAmt === undefined || rawAmt === null) continue;
+        const s = String(rawAmt);
+        amounts.push(s);
+        const n = Number(s);
+        if (Number.isFinite(n)) total += n;
+      }
+      if (amounts.length > 0) return { total, amounts };
+    }
+
+    return null;
+  }
+
   async function handleQueryBalance() {
     if (!primaryParty) {
       addLog('error', '[Balance] No primary party — wait for accounts to load');
       return;
     }
     setLoading('balance');
-    addLog('info', `[Balance] Querying active Amulet contracts for ${primaryParty}...`);
+    const providerType = statusEvent?.provider?.providerType;
+    addLog('info', `[Balance] Querying for ${primaryParty} (provider: ${providerType ?? 'unknown'})...`);
+
+    // Path A: WC mobile wallets — probe custom wallet methods. The standard
+    // canton_ledgerApi is denied with 4100 for /v2/state/* on most WC wallets,
+    // and there's no spec method for balance, so we try wallet-specific
+    // extensions and surface every attempt in the log.
+    if (providerType === 'mobile' && wcAdapter) {
+      try {
+        let hit: { method: string; result: unknown } | null = null;
+        for (const method of WC_BALANCE_PROBE_METHODS) {
+          try {
+            addLog('info', `[Balance] Probe → ${method}({partyId})`);
+            const result = await wcAdapter.rawRequest(method, { partyId: primaryParty });
+            addLog(
+              'success',
+              `[Balance] ${method} OK → ${JSON.stringify(result).slice(0, 200)}`,
+            );
+            hit = { method, result };
+            break;
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            addLog('info', `[Balance] ${method} → ${msg.slice(0, 120)}`);
+          }
+        }
+        if (!hit) {
+          addLog(
+            'error',
+            `[Balance] No probed method succeeded on this WC wallet. Candidates tried: ${WC_BALANCE_PROBE_METHODS.join(
+              ', ',
+            )}. If your wallet uses a different method name, let me know and I'll add it.`,
+          );
+          return;
+        }
+        const parsed = extractBalanceFromWalletResponse(hit.result);
+        if (!parsed) {
+          addLog(
+            'error',
+            `[Balance] ${hit.method} returned but I couldn't find a balance field in the response: ${JSON.stringify(
+              hit.result,
+            ).slice(0, 300)}`,
+          );
+          return;
+        }
+        setBalance({
+          total: parsed.total,
+          contractCount: parsed.amounts.length,
+          amounts: parsed.amounts,
+          queriedAt: new Date(),
+        });
+        addLog(
+          'success',
+          `[Balance] via ${hit.method}: ${parsed.amounts.length} entry(ies); total = ${parsed.total}`,
+        );
+      } finally {
+        setLoading(null);
+      }
+      return;
+    }
+
+    // Path B: extensions / remote gateways — keep the existing canton_ledgerApi
+    // + /v2/state/active-contracts flow. Falls through to the helper below.
+    addLog('info', `[Balance] Using canton_ledgerApi proxy (extension/remote path)`);
 
     // sdk.ledgerApi() returns LedgerApiResult = { [k: string]: any }. Convention
     // is { response: "<json-string>" }, but different gateways may return the
