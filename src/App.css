@@ -397,6 +397,27 @@ pre {
   color: #888;
 }
 
+/* Manual context override */
+.manual-override {
+  margin: 8px 0;
+  font-size: 12px;
+}
+
+.manual-override summary {
+  cursor: pointer;
+  color: #aaa;
+  padding: 4px 0;
+  user-select: none;
+}
+
+.manual-override summary:hover {
+  color: #ddd;
+}
+
+.manual-override[open] summary {
+  margin-bottom: 8px;
+}
+
 /* Discovered network context */
 .context-box {
   background: #12141c;
