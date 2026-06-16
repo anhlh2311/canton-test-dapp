@@ -776,16 +776,55 @@ function App() {
     }
     setLoading('balance');
     addLog('info', `[Balance] Querying active Amulet contracts for ${primaryParty}...`);
-    try {
-      // Step 1: snapshot the ledger end to pin the ACS query to a deterministic
-      // offset (required by /v2/state/active-contracts).
-      const endResp = await sdk.ledgerApi({ requestMethod: 'get', resource: '/v2/state/ledger-end' });
-      const endData = JSON.parse(endResp.response) as { offset?: number | string };
-      const activeAtOffset = endData.offset;
-      if (activeAtOffset === undefined) throw new Error('Ledger end did not return an offset');
 
-      // Step 2: query active contracts filtered by template + owning party.
-      const body = {
+    // sdk.ledgerApi() returns LedgerApiResult = { [k: string]: any }. Convention
+    // is { response: "<json-string>" }, but different gateways may return the
+    // body already parsed, or attach it under a different field. Normalize.
+    const body = (r: unknown): unknown => {
+      if (!r || typeof r !== 'object') return r;
+      const o = r as Record<string, unknown>;
+      if (typeof o.response === 'string') {
+        try { return JSON.parse(o.response); } catch { return o.response; }
+      }
+      return o.response ?? o;
+    };
+
+    // The gateway may return offset as a number, a string, or wrapped in
+    // { absolute }. Try each shape; reject objects we can't unwrap.
+    const extractOffset = (data: unknown): number | string | undefined => {
+      if (data === null || data === undefined) return undefined;
+      if (typeof data === 'number' || typeof data === 'string') return data;
+      if (typeof data === 'object') {
+        const o = data as Record<string, unknown>;
+        if (typeof o.offset === 'number' || typeof o.offset === 'string') return o.offset;
+        if (o.offset && typeof o.offset === 'object') {
+          const inner = o.offset as Record<string, unknown>;
+          if (typeof inner.absolute === 'number' || typeof inner.absolute === 'string') return inner.absolute;
+        }
+      }
+      return undefined;
+    };
+
+    // Step 1: best-effort fetch of the ledger end. Failure here does NOT block
+    // the ACS query — we just call it without `activeAtOffset` and let the
+    // gateway/Canton resolve "now" itself.
+    let activeAtOffset: number | string | undefined = undefined;
+    try {
+      addLog('info', '[Balance] GET /v2/state/ledger-end');
+      const endResp = await sdk.ledgerApi({ requestMethod: 'get', resource: '/v2/state/ledger-end' });
+      const endData = body(endResp);
+      addLog('info', `[Balance] ledger-end → ${JSON.stringify(endData).slice(0, 200)}`);
+      activeAtOffset = extractOffset(endData);
+      if (activeAtOffset === undefined) {
+        addLog('info', '[Balance] no extractable offset; will POST active-contracts without one');
+      }
+    } catch (e) {
+      addLog('info', `[Balance] ledger-end unavailable (${e instanceof Error ? e.message : String(e)}); continuing without offset`);
+    }
+
+    // Step 2: query active contracts. ALWAYS attempted, regardless of step 1.
+    try {
+      const acsBody: Record<string, unknown> = {
         filter: {
           filtersByParty: {
             [primaryParty]: {
@@ -805,16 +844,27 @@ function App() {
           },
         },
         verbose: false,
-        activeAtOffset,
       };
+      if (activeAtOffset !== undefined) acsBody.activeAtOffset = activeAtOffset;
+
+      addLog(
+        'info',
+        `[Balance] POST /v2/state/active-contracts ${
+          activeAtOffset === undefined ? '(no activeAtOffset)' : `(activeAtOffset=${activeAtOffset})`
+        }`,
+      );
       const acsResp = await sdk.ledgerApi({
         requestMethod: 'post',
         resource: '/v2/state/active-contracts',
-        body,
+        body: acsBody,
       });
+      const rawResponse =
+        typeof (acsResp as Record<string, unknown>)?.response === 'string'
+          ? ((acsResp as Record<string, unknown>).response as string)
+          : JSON.stringify(body(acsResp) ?? acsResp);
+      addLog('info', `[Balance] active-contracts ← ${rawResponse.slice(0, 200)}${rawResponse.length > 200 ? '…' : ''}`);
 
-      // Step 3: parse + sum initialAmount across contracts.
-      const entries = parseAcsEntries(acsResp.response);
+      const entries = parseAcsEntries(rawResponse);
       const amounts: string[] = [];
       let total = 0;
       for (const entry of entries) {
@@ -825,14 +875,13 @@ function App() {
         if (!Number.isNaN(n)) total += n;
       }
 
-      const result: AmuletBalance = { total, contractCount: amounts.length, amounts, queriedAt: new Date() };
-      setBalance(result);
+      setBalance({ total, contractCount: amounts.length, amounts, queriedAt: new Date() });
       addLog(
         'success',
-        `[Balance] ${amounts.length} active Amulet contract(s) at offset ${activeAtOffset}; total initialAmount = ${total}`,
+        `[Balance] parsed ${entries.length} entry(ies), ${amounts.length} with amount; total = ${total}`,
       );
     } catch (e) {
-      addLog('error', `[Balance] Query failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[Balance] active-contracts failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setLoading(null);
     }
