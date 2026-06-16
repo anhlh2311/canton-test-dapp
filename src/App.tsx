@@ -335,6 +335,9 @@ function App() {
   // Ledger query/submit state
   const [queryResponses, setQueryResponses] = useState<Array<{ timestamp: Date; data: unknown }>>([]);
   const [balance, setBalance] = useState<AmuletBalance | null>(null);
+  const [transferAmount, setTransferAmount] = useState('');
+  const [transferReceiver, setTransferReceiver] = useState('');
+  const [transferResult, setTransferResult] = useState<{ timestamp: Date; data: unknown } | null>(null);
   const [transactions, setTransactions] = useState<sdk.dappAPI.TxChangedEvent[]>([]);
 
   // WalletConnect state
@@ -1206,6 +1209,87 @@ function App() {
     }
   }
 
+  async function handleTransferAmulet() {
+    if (!primaryParty) {
+      addLog('error', '[Transfer] No primary party — connect a wallet first');
+      return;
+    }
+    const amount = transferAmount.trim();
+    const receiver = transferReceiver.trim();
+    if (!amount || !/^\d+(\.\d+)?$/.test(amount) || Number(amount) <= 0) {
+      addLog('error', '[Transfer] Amount must be a positive decimal');
+      return;
+    }
+    if (!receiver.includes('::')) {
+      addLog('error', '[Transfer] Receiver must be a valid party ID (<hint>::<namespace>)');
+      return;
+    }
+
+    setLoading('transfer');
+    addLog('info', `[Transfer] CIP-0103 prepareExecute → ${amount} CC: ${primaryParty} → ${receiver}`);
+
+    try {
+      // CIP-0103 transaction lifecycle via sdk.prepareExecute():
+      //   1. Dapp constructs the Daml command list.
+      //   2. SDK forwards to wallet → wallet POSTs /v2/interactive-submission/prepare
+      //      to the ledger to compute the prepared transaction hash.
+      //   3. Wallet shows the user an approval popup.
+      //   4. User approves → wallet signs the hash with the party's signing key.
+      //   5. Wallet POSTs /v2/interactive-submission/execute to submit on-ledger.
+      //   6. dApp receives { userUrl } pointing at the approval surface, plus a
+      //      txChanged event with the final status.
+      //
+      // Command: exercise Splice Token Standard's TransferFactory_Transfer choice.
+      // The wallet/gateway is expected to resolve the factory contract id, DSO
+      // (expectedAdmin), instrumentId.admin, and input holding cids — those are
+      // ledger-discovery details the dApp doesn't have direct access to under
+      // a restricted WC session. If the wallet doesn't auto-resolve, the error
+      // returned to this catch block will tell us which field is missing.
+      const now = new Date();
+      const command = {
+        commands: [
+          {
+            ExerciseCommand: {
+              templateId:
+                '#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferFactory',
+              contractId: '',
+              choice: 'TransferFactory_Transfer',
+              choiceArgument: {
+                expectedAdmin: '',
+                transfer: {
+                  sender: primaryParty,
+                  receiver,
+                  amount,
+                  instrumentId: { admin: '', id: 'Amulet' },
+                  requestedAt: now.toISOString(),
+                  executeBefore: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
+                  inputHoldingCids: [],
+                  meta: { values: [] },
+                },
+                extraArgs: {
+                  context: { values: [] },
+                  meta: { values: [] },
+                },
+              },
+            },
+          },
+        ],
+      };
+
+      addLog('info', '[Transfer] phase 1/2: wallet prepares + asks user for approval...');
+      const result = await sdk.prepareExecute(command);
+      addLog('info', '[Transfer] phase 2/2: wallet signed + submitted to ledger');
+      setTransferResult({ timestamp: new Date(), data: result });
+      addLog('success', `[Transfer] Lifecycle complete → ${prettyjson(result)}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setTransferResult({ timestamp: new Date(), data: { error: msg } });
+      addLog('error', `[Transfer] Failed: ${msg}`);
+    } finally {
+      setLoading(null);
+    }
+  }
+
   async function handleCreatePing() {
     if (!primaryParty) return;
     setLoading('submit');
@@ -1421,6 +1505,13 @@ function App() {
           balance={balance}
           balanceLoading={loading === 'balance'}
           onQueryBalance={handleQueryBalance}
+          transferAmount={transferAmount}
+          transferReceiver={transferReceiver}
+          transferResult={transferResult}
+          transferLoading={loading === 'transfer'}
+          onTransferAmountChange={setTransferAmount}
+          onTransferReceiverChange={setTransferReceiver}
+          onTransfer={handleTransferAmulet}
           onCopy={async (value, label) => {
             try {
               await navigator.clipboard.writeText(value);
@@ -1733,6 +1824,13 @@ function AccountsTab({
   balance,
   balanceLoading,
   onQueryBalance,
+  transferAmount,
+  transferReceiver,
+  transferResult,
+  transferLoading,
+  onTransferAmountChange,
+  onTransferReceiverChange,
+  onTransfer,
   onCopy,
 }: {
   accounts: sdk.dappAPI.Wallet[];
@@ -1740,6 +1838,13 @@ function AccountsTab({
   balance: AmuletBalance | null;
   balanceLoading: boolean;
   onQueryBalance: () => void;
+  transferAmount: string;
+  transferReceiver: string;
+  transferResult: { timestamp: Date; data: unknown } | null;
+  transferLoading: boolean;
+  onTransferAmountChange: (v: string) => void;
+  onTransferReceiverChange: (v: string) => void;
+  onTransfer: () => void;
   onCopy: (value: string, label: string) => void;
 }) {
   if (accounts.length === 0) {
@@ -1844,6 +1949,59 @@ function AccountsTab({
                 No active Amulet contracts found — wallet balance is 0 for this template.
               </p>
             )}
+          </div>
+        )}
+      </section>
+
+      <section className="card">
+        <h2>Transfer Amulet</h2>
+        <p className="hint">
+          Triggers the standard CIP-0103 transaction lifecycle via{' '}
+          <code>sdk.prepareExecute()</code>: dApp constructs the command → wallet
+          prepares (computes hash) → wallet asks user for approval → wallet signs
+          → wallet submits to the ledger. The command exercises{' '}
+          <code>TransferFactory_Transfer</code> on the Splice Token Standard
+          transfer-instruction interface.
+        </p>
+        <div className="transfer-form">
+          <div className="transfer-field">
+            <label htmlFor="transfer-amount">Amount (CC)</label>
+            <input
+              id="transfer-amount"
+              type="text"
+              inputMode="decimal"
+              value={transferAmount}
+              onChange={(e) => onTransferAmountChange(e.target.value)}
+              placeholder="1.0"
+              disabled={transferLoading}
+            />
+          </div>
+          <div className="transfer-field">
+            <label htmlFor="transfer-receiver">Receiver Party ID</label>
+            <input
+              id="transfer-receiver"
+              type="text"
+              value={transferReceiver}
+              onChange={(e) => onTransferReceiverChange(e.target.value)}
+              placeholder="<hint>::1220<sha256-of-pubkey>"
+              disabled={transferLoading}
+            />
+          </div>
+        </div>
+        <div className="button-row">
+          <button
+            onClick={onTransfer}
+            disabled={transferLoading || !primaryParty || !transferAmount.trim() || !transferReceiver.trim()}
+          >
+            {transferLoading ? 'Sending…' : 'Send'}
+          </button>
+        </div>
+        {transferResult && (
+          <div className="terminal-display">
+            <div className="terminal-label">
+              Last lifecycle result ({transferResult.timestamp.toLocaleTimeString()})
+            </div>
+            <pre>{JSON.stringify(transferResult.data, null, 2)}</pre>
           </div>
         )}
       </section>

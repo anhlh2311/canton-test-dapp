@@ -397,6 +397,47 @@ pre {
   color: #888;
 }
 
+/* Transfer Amulet form */
+.transfer-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.transfer-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.transfer-field label {
+  font-size: 0.78rem;
+  color: #888;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.transfer-field input {
+  background: #0f0f0f;
+  border: 1px solid #2a2a2a;
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: #ddd;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+
+.transfer-field input:focus {
+  outline: none;
+  border-color: #4a4a4a;
+}
+
+.transfer-field input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* Badges */
 .badge {
   font-size: 0.65rem;
