@@ -279,6 +279,15 @@ function App() {
 
   const isConnected = statusEvent?.connection?.isConnected ?? false;
   const isNetworkConnected = statusEvent?.connection?.isNetworkConnected ?? false;
+  const connectionReason = statusEvent?.connection?.reason ?? '';
+  // "Locked" is a soft state: wallet still reachable but signing is gated until
+  // the user unlocks. CIP-0103 doesn't fix the exact reason string, so match on
+  // common variants emitted by Ginkgo / splice-wallet-kernel forks.
+  const isLocked = !isConnected && /lock|expir|sess/i.test(connectionReason);
+  // Captures the last-seen statusEvent so onStatus can compute a diff and only
+  // log the fields that actually changed (network switches vs. lock vs. plain
+  // refresh look identical otherwise).
+  const prevStatusRef = useRef<sdk.dappAPI.StatusEvent | undefined>(undefined);
   const primaryParty = accounts.find((a) => a.primary)?.partyId;
   // Canonical source of the connected user's Ed25519 public key. Sourced from
   // `Wallet.publicKey` on listAccounts / accountsChanged, NOT from the
@@ -309,7 +318,10 @@ function App() {
     if (wcAdapter) adapters.push(wcAdapter as unknown as ProviderAdapter);
     sdk.init({ additionalAdapters: adapters })
       .then(() => sdk.status())
-      .then((s) => setStatusEvent(s))
+      .then((s) => {
+        setStatusEvent(s);
+        prevStatusRef.current = s;
+      })
       .catch(() => {});
   }, [wcAdapter]);
 
@@ -318,10 +330,31 @@ function App() {
     if (!isConnected) return;
 
     const onStatus = (event: sdk.dappAPI.StatusEvent) => {
+      // Snapshot the previous status BEFORE updating, so we can compute a diff.
+      const prev = prevStatusRef.current;
+      prevStatusRef.current = event;
       setStatusEvent(event);
       const eid = ++eventId;
-      setEvents((prev) => [{ id: eid, type: 'StatusChanged', timestamp: new Date(), data: event }, ...prev]);
-      addLog('info', `[Event] statusChanged → connected=${event.connection?.isConnected}`);
+      setEvents((evs) => [{ id: eid, type: 'StatusChanged', timestamp: new Date(), data: event }, ...evs]);
+
+      const fmt = (v: unknown) => (v === undefined ? 'undefined' : String(v));
+      const changes: string[] = [];
+      if (prev?.connection.isConnected !== event.connection.isConnected) {
+        changes.push(`isConnected ${fmt(prev?.connection.isConnected)} → ${fmt(event.connection.isConnected)}`);
+      }
+      if (prev?.connection.isNetworkConnected !== event.connection.isNetworkConnected) {
+        changes.push(`isNetworkConnected ${fmt(prev?.connection.isNetworkConnected)} → ${fmt(event.connection.isNetworkConnected)}`);
+      }
+      if (prev?.network?.networkId !== event.network?.networkId) {
+        changes.push(`networkId ${prev?.network?.networkId ?? 'none'} → ${event.network?.networkId ?? 'none'}`);
+      }
+      if (event.connection.reason && prev?.connection.reason !== event.connection.reason) {
+        changes.push(`reason="${event.connection.reason}"`);
+      }
+      if (event.connection.networkReason && prev?.connection.networkReason !== event.connection.networkReason) {
+        changes.push(`networkReason="${event.connection.networkReason}"`);
+      }
+      addLog('info', `[Event] statusChanged ${changes.length ? changes.join(', ') : '(no visible change)'}`);
     };
 
     const onAccounts = (event: sdk.dappAPI.AccountsChangedEvent) => {
@@ -795,8 +828,14 @@ function App() {
       <section className="card">
         <h2>Connection</h2>
         <div className="status-row">
-          <span className={`status-dot ${isConnected ? 'green' : 'red'}`} />
-          <span>{isConnected ? `Connected (${statusEvent?.provider?.providerType ?? 'unknown'})` : 'Disconnected'}</span>
+          <span className={`status-dot ${isConnected ? 'green' : isLocked ? 'yellow' : 'red'}`} />
+          <span>
+            {isConnected
+              ? `Connected (${statusEvent?.provider?.providerType ?? 'unknown'})`
+              : isLocked
+                ? `Locked${connectionReason ? `: ${connectionReason}` : ''}`
+                : `Disconnected${connectionReason ? `: ${connectionReason}` : ''}`}
+          </span>
         </div>
         <div className="button-row">
           <button onClick={handleConnect} disabled={!!loading}>
