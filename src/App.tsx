@@ -222,36 +222,6 @@ interface AmuletBalance {
   queriedAt: Date;
 }
 
-// Splice network context discovered from /v0/dso. Required to fill in the
-// `expectedAdmin` and `instrumentId.admin` (DSO party) fields and the
-// AmuletRules contract id for TransferFactory_Transfer commands.
-interface DiscoveredContext {
-  dsoPartyId: string;
-  amuletRulesCid?: string;
-  discoveredAt: Date;
-  source: 'wallet-proxy' | 'scan-direct';
-}
-
-function parseDsoInfo(body: unknown, source: DiscoveredContext['source']): DiscoveredContext {
-  if (!body || typeof body !== 'object') {
-    throw new Error(`/v0/dso returned non-object: ${JSON.stringify(body).slice(0, 200)}`);
-  }
-  const o = body as Record<string, unknown>;
-  const dsoPartyId = o.dso_party_id;
-  if (typeof dsoPartyId !== 'string' || !dsoPartyId) {
-    throw new Error(`/v0/dso missing dso_party_id: ${JSON.stringify(body).slice(0, 200)}`);
-  }
-  const amuletRules = o.amulet_rules as Record<string, unknown> | undefined;
-  const contract = amuletRules?.contract as Record<string, unknown> | undefined;
-  const amuletRulesCid =
-    typeof contract?.contract_id === 'string'
-      ? (contract.contract_id as string)
-      : typeof contract?.contractId === 'string'
-        ? (contract.contractId as string)
-        : undefined;
-  return { dsoPartyId, amuletRulesCid, discoveredAt: new Date(), source };
-}
-
 // JSON Ledger API's /v2/state/active-contracts response shape varies by Canton
 // version: sometimes a JSON array, sometimes NDJSON, sometimes wrapped in an
 // envelope object. Try each in turn so the consumer doesn't have to care.
@@ -365,14 +335,6 @@ function App() {
   // Ledger query/submit state
   const [queryResponses, setQueryResponses] = useState<Array<{ timestamp: Date; data: unknown }>>([]);
   const [balance, setBalance] = useState<AmuletBalance | null>(null);
-  const [discoveredContext, setDiscoveredContext] = useState<DiscoveredContext | null>(null);
-  const [transferAmount, setTransferAmount] = useState('');
-  const [transferReceiver, setTransferReceiver] = useState('');
-  const [transferResult, setTransferResult] = useState<{ timestamp: Date; data: unknown } | null>(null);
-  // Manual context overrides — used when /v0/dso isn't reachable. Either field
-  // takes precedence over the same field from discoveredContext.
-  const [manualDsoParty, setManualDsoParty] = useState('');
-  const [manualAmuletRulesCid, setManualAmuletRulesCid] = useState('');
   const [transactions, setTransactions] = useState<sdk.dappAPI.TxChangedEvent[]>([]);
 
   // WalletConnect state
@@ -1053,43 +1015,6 @@ function App() {
     };
   }
 
-  // Fetches Splice /v0/dso to discover the DSO party + AmuletRules contract id.
-  //
-  // NOTE: canton_ledgerApi cannot proxy this. Inspected the kairo backend at
-  // canton-exchange-backend/src/modules/cip-0103-facade/dapp-api.controller.ts
-  // — the JSON-RPC dispatcher only routes the 10 standard CIP-0103 methods,
-  // and `ledgerApi` itself forwards only /v2/* Canton Ledger paths. The /v0/*
-  // Splice Scan endpoints live on a separate service. So discovery must be
-  // direct HTTP against a configured Scan URL.
-  async function discoverContext(): Promise<DiscoveredContext> {
-    const scanUrl = getConfiguredScanUrl(statusEvent?.network?.networkId);
-    if (!scanUrl) {
-      throw new Error(
-        `Can't auto-discover DSO: no Scan URL configured for network "${statusEvent?.network?.networkId ?? 'unknown'}". Set VITE_SCAN_API_URL in .env.local, or paste DSO + AmuletRules cid manually in the Transfer Amulet section.`,
-      );
-    }
-    addLog('info', `[Discovery] GET ${scanUrl}/v0/dso`);
-    let res: Response;
-    try {
-      res = await fetch(`${scanUrl}/v0/dso`);
-    } catch (e) {
-      throw new Error(
-        `Scan API /v0/dso fetch failed (likely CORS — origin ${window.location.origin} must be allowed by ${new URL(scanUrl).origin}): ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      );
-    }
-    const text = await res.text();
-    if (!res.ok) throw new Error(`${scanUrl}/v0/dso → HTTP ${res.status}: ${text.slice(0, 200)}`);
-    const body = JSON.parse(text);
-    const ctx = parseDsoInfo(body, 'scan-direct');
-    addLog(
-      'info',
-      `[Discovery] resolved via Scan → dso=${ctx.dsoPartyId.slice(0, 32)}..., amuletRulesCid=${ctx.amuletRulesCid?.slice(0, 24) ?? 'none'}...`,
-    );
-    return ctx;
-  }
-
   async function handleQueryBalance() {
     if (!primaryParty) {
       addLog('error', '[Balance] No primary party — wait for accounts to load');
@@ -1098,13 +1023,6 @@ function App() {
     setLoading('balance');
     const providerType = statusEvent?.provider?.providerType;
     addLog('info', `[Balance] Querying for ${primaryParty} (provider: ${providerType ?? 'unknown'})...`);
-
-    // Best-effort context discovery in parallel — used by Transfer Amulet later.
-    // Failure here doesn't block the balance query.
-    discoverContext()
-      .then(setDiscoveredContext)
-      .catch((e) => addLog('info', `[Discovery] skipped: ${e instanceof Error ? e.message : String(e)}`));
-
 
     // Path A: WC mobile wallets — probe custom wallet methods. The standard
     // canton_ledgerApi is denied with 4100 for /v2/state/* on most WC wallets,
@@ -1283,117 +1201,6 @@ function App() {
       );
     } catch (e) {
       addLog('error', `[Balance] active-contracts failed: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setLoading(null);
-    }
-  }
-
-  async function handleTransferAmulet() {
-    if (!primaryParty) {
-      addLog('error', '[Transfer] No primary party — connect a wallet first');
-      return;
-    }
-    const amount = transferAmount.trim();
-    const receiver = transferReceiver.trim();
-    if (!amount || !/^\d+(\.\d+)?$/.test(amount) || Number(amount) <= 0) {
-      addLog('error', '[Transfer] Amount must be a positive decimal');
-      return;
-    }
-    if (!receiver.includes('::')) {
-      addLog('error', '[Transfer] Receiver must be a valid party ID (<hint>::<namespace>)');
-      return;
-    }
-
-    setLoading('transfer');
-    addLog('info', `[Transfer] CIP-0103 prepareExecute → ${amount} CC: ${primaryParty} → ${receiver}`);
-
-    try {
-      // Resolve the DSO party + AmuletRules cid. Order of precedence:
-      //   1. Manual overrides (highest — power-user / restricted-network case)
-      //   2. Cached discoveredContext from a prior Query Wallet Balance
-      //   3. Live discoverContext() call against the configured Scan URL
-      const manualDso = manualDsoParty.trim();
-      const manualCid = manualAmuletRulesCid.trim();
-      let ctx = discoveredContext;
-      if (!manualDso && !ctx) {
-        try {
-          addLog('info', '[Transfer] No manual override or cached context — running discovery');
-          ctx = await discoverContext();
-          setDiscoveredContext(ctx);
-        } catch (e) {
-          throw new Error(
-            `Couldn't determine DSO party: ${
-              e instanceof Error ? e.message : String(e)
-            }. Paste DSO + AmuletRules cid manually under Transfer Amulet.`,
-          );
-        }
-      }
-      const dsoPartyId = manualDso || ctx?.dsoPartyId;
-      const amuletRulesCid = manualCid || ctx?.amuletRulesCid || '';
-      if (!dsoPartyId) {
-        throw new Error('No DSO party available — discovery failed and no manual value was provided');
-      }
-      addLog(
-        'info',
-        `[Transfer] Using DSO ${dsoPartyId.slice(0, 32)}..., AmuletRules cid ${amuletRulesCid ? amuletRulesCid.slice(0, 24) + '...' : '(empty)'}`,
-      );
-
-      // CIP-0103 transaction lifecycle via sdk.prepareExecute():
-      //   1. Dapp constructs the Daml command list.
-      //   2. SDK forwards to wallet → wallet POSTs /v2/interactive-submission/prepare
-      //      to the ledger to compute the prepared transaction hash.
-      //   3. Wallet shows the user an approval popup.
-      //   4. User approves → wallet signs the hash with the party's signing key.
-      //   5. Wallet POSTs /v2/interactive-submission/execute to submit on-ledger.
-      //   6. dApp receives { userUrl } pointing at the approval surface, plus a
-      //      txChanged event with the final status.
-      //
-      // Command: exercise Splice Token Standard's TransferFactory_Transfer choice.
-      // expectedAdmin + instrumentId.admin come from /v0/dso discovery.
-      // contractId for the factory is best-effort: AmuletRules cid is the most
-      // likely candidate; the wallet may also have its own override.
-      // inputHoldingCids is left empty — the wallet/gateway is expected to pick
-      // unspent Amulets for the sender.
-      const now = new Date();
-      const command = {
-        commands: [
-          {
-            ExerciseCommand: {
-              templateId:
-                '#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferFactory',
-              contractId: amuletRulesCid,
-              choice: 'TransferFactory_Transfer',
-              choiceArgument: {
-                expectedAdmin: dsoPartyId,
-                transfer: {
-                  sender: primaryParty,
-                  receiver,
-                  amount,
-                  instrumentId: { admin: dsoPartyId, id: 'Amulet' },
-                  requestedAt: now.toISOString(),
-                  executeBefore: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
-                  inputHoldingCids: [],
-                  meta: { values: [] },
-                },
-                extraArgs: {
-                  context: { values: [] },
-                  meta: { values: [] },
-                },
-              },
-            },
-          },
-        ],
-      };
-
-      addLog('info', '[Transfer] phase 1/2: wallet prepares + asks user for approval...');
-      const result = await sdk.prepareExecute(command);
-      addLog('info', '[Transfer] phase 2/2: wallet signed + submitted to ledger');
-      setTransferResult({ timestamp: new Date(), data: result });
-      addLog('success', `[Transfer] Lifecycle complete → ${prettyjson(result)}`);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setTransferResult({ timestamp: new Date(), data: { error: msg } });
-      addLog('error', `[Transfer] Failed: ${msg}`);
     } finally {
       setLoading(null);
     }
@@ -1614,18 +1421,6 @@ function App() {
           balance={balance}
           balanceLoading={loading === 'balance'}
           onQueryBalance={handleQueryBalance}
-          discoveredContext={discoveredContext}
-          manualDsoParty={manualDsoParty}
-          manualAmuletRulesCid={manualAmuletRulesCid}
-          onManualDsoChange={setManualDsoParty}
-          onManualAmuletRulesCidChange={setManualAmuletRulesCid}
-          transferAmount={transferAmount}
-          transferReceiver={transferReceiver}
-          transferResult={transferResult}
-          transferLoading={loading === 'transfer'}
-          onTransferAmountChange={setTransferAmount}
-          onTransferReceiverChange={setTransferReceiver}
-          onTransfer={handleTransferAmulet}
           onCopy={async (value, label) => {
             try {
               await navigator.clipboard.writeText(value);
@@ -1938,18 +1733,6 @@ function AccountsTab({
   balance,
   balanceLoading,
   onQueryBalance,
-  discoveredContext,
-  manualDsoParty,
-  manualAmuletRulesCid,
-  onManualDsoChange,
-  onManualAmuletRulesCidChange,
-  transferAmount,
-  transferReceiver,
-  transferResult,
-  transferLoading,
-  onTransferAmountChange,
-  onTransferReceiverChange,
-  onTransfer,
   onCopy,
 }: {
   accounts: sdk.dappAPI.Wallet[];
@@ -1957,18 +1740,6 @@ function AccountsTab({
   balance: AmuletBalance | null;
   balanceLoading: boolean;
   onQueryBalance: () => void;
-  discoveredContext: DiscoveredContext | null;
-  manualDsoParty: string;
-  manualAmuletRulesCid: string;
-  onManualDsoChange: (v: string) => void;
-  onManualAmuletRulesCidChange: (v: string) => void;
-  transferAmount: string;
-  transferReceiver: string;
-  transferResult: { timestamp: Date; data: unknown } | null;
-  transferLoading: boolean;
-  onTransferAmountChange: (v: string) => void;
-  onTransferReceiverChange: (v: string) => void;
-  onTransfer: () => void;
   onCopy: (value: string, label: string) => void;
 }) {
   if (accounts.length === 0) {
@@ -2077,114 +1848,6 @@ function AccountsTab({
         )}
       </section>
 
-      <section className="card">
-        <h2>Transfer Amulet</h2>
-        <p className="hint">
-          Triggers the standard CIP-0103 transaction lifecycle via{' '}
-          <code>sdk.prepareExecute()</code>: dApp constructs the command → wallet
-          prepares (computes hash) → wallet asks user for approval → wallet signs
-          → wallet submits to the ledger. The command exercises{' '}
-          <code>TransferFactory_Transfer</code> on the Splice Token Standard
-          transfer-instruction interface, using DSO + AmuletRules discovered from{' '}
-          <code>/v0/dso</code>.
-        </p>
-        {discoveredContext ? (
-          <div className="context-box">
-            <div className="account-row account-row-meta">
-              <span className="account-label">DSO party:</span>
-              <code className="account-value wrap">{discoveredContext.dsoPartyId}</code>
-              <button className="sign-copy" onClick={() => onCopy(discoveredContext.dsoPartyId, 'DSO party')}>Copy</button>
-            </div>
-            <div className="account-row account-row-meta">
-              <span className="account-label">AmuletRules cid:</span>
-              <code className="account-value wrap">{discoveredContext.amuletRulesCid ?? '(not in /v0/dso response)'}</code>
-              {discoveredContext.amuletRulesCid && (
-                <button className="sign-copy" onClick={() => onCopy(discoveredContext.amuletRulesCid as string, 'AmuletRules cid')}>Copy</button>
-              )}
-            </div>
-            <div className="account-row account-row-meta">
-              <span className="account-label">Source:</span>
-              <code className="account-value">{discoveredContext.source}</code>
-              <span className="account-value account-row-meta">at {discoveredContext.discoveredAt.toLocaleTimeString()}</span>
-            </div>
-          </div>
-        ) : (
-          <p className="hint balance-empty">
-            DSO not yet discovered — runs automatically on first Send, or as a side-effect of Query Wallet Balance.
-            Set <code>VITE_SCAN_API_URL</code> in <code>.env.local</code> to point at a Splice Scan that publishes{' '}
-            <code>/v0/dso</code>, or paste the values below manually.
-          </p>
-        )}
-
-        <details className="manual-override" open={!discoveredContext}>
-          <summary>Manual override (use when /v0/dso isn't reachable)</summary>
-          <div className="transfer-form">
-            <div className="transfer-field">
-              <label htmlFor="manual-dso">DSO Party ID (overrides discovered value)</label>
-              <input
-                id="manual-dso"
-                type="text"
-                value={manualDsoParty}
-                onChange={(e) => onManualDsoChange(e.target.value)}
-                placeholder="DSO::1220<sha256-of-pubkey>"
-                disabled={transferLoading}
-              />
-            </div>
-            <div className="transfer-field">
-              <label htmlFor="manual-amulet-rules-cid">AmuletRules Contract ID (overrides discovered value)</label>
-              <input
-                id="manual-amulet-rules-cid"
-                type="text"
-                value={manualAmuletRulesCid}
-                onChange={(e) => onManualAmuletRulesCidChange(e.target.value)}
-                placeholder="00<contract-id-hex>"
-                disabled={transferLoading}
-              />
-            </div>
-          </div>
-        </details>
-        <div className="transfer-form">
-          <div className="transfer-field">
-            <label htmlFor="transfer-amount">Amount (CC)</label>
-            <input
-              id="transfer-amount"
-              type="text"
-              inputMode="decimal"
-              value={transferAmount}
-              onChange={(e) => onTransferAmountChange(e.target.value)}
-              placeholder="1.0"
-              disabled={transferLoading}
-            />
-          </div>
-          <div className="transfer-field">
-            <label htmlFor="transfer-receiver">Receiver Party ID</label>
-            <input
-              id="transfer-receiver"
-              type="text"
-              value={transferReceiver}
-              onChange={(e) => onTransferReceiverChange(e.target.value)}
-              placeholder="<hint>::1220<sha256-of-pubkey>"
-              disabled={transferLoading}
-            />
-          </div>
-        </div>
-        <div className="button-row">
-          <button
-            onClick={onTransfer}
-            disabled={transferLoading || !primaryParty || !transferAmount.trim() || !transferReceiver.trim()}
-          >
-            {transferLoading ? 'Sending…' : 'Send'}
-          </button>
-        </div>
-        {transferResult && (
-          <div className="terminal-display">
-            <div className="terminal-label">
-              Last lifecycle result ({transferResult.timestamp.toLocaleTimeString()})
-            </div>
-            <pre>{JSON.stringify(transferResult.data, null, 2)}</pre>
-          </div>
-        )}
-      </section>
     </>
   );
 }
