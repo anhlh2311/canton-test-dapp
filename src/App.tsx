@@ -191,6 +191,70 @@ async function preImageBytes(message: string, scheme: 'utf8' | 'ginkgo'): Promis
 
 let signId = 0;
 
+// ============================================================
+// Amulet balance query (active contracts via Ledger API)
+// ============================================================
+interface AmuletBalance {
+  total: number;
+  contractCount: number;
+  amounts: string[];
+  queriedAt: Date;
+}
+
+// JSON Ledger API's /v2/state/active-contracts response shape varies by Canton
+// version: sometimes a JSON array, sometimes NDJSON, sometimes wrapped in an
+// envelope object. Try each in turn so the consumer doesn't have to care.
+function parseAcsEntries(response: string): unknown[] {
+  const trimmed = response.trim();
+  if (!trimmed) return [];
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed && typeof parsed === 'object') {
+      const obj = parsed as Record<string, unknown>;
+      if (Array.isArray(obj.acs)) return obj.acs;
+      if (Array.isArray(obj.contracts)) return obj.contracts;
+      if (Array.isArray(obj.contractEntries)) return obj.contractEntries;
+      // Single-entry envelope → wrap so caller sees a uniform array.
+      return [parsed];
+    }
+    return [];
+  } catch {
+    // Likely NDJSON. One JSON object per non-empty line.
+    return trimmed
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => {
+        try {
+          return JSON.parse(l);
+        } catch {
+          return null;
+        }
+      })
+      .filter((x): x is unknown => x !== null);
+  }
+}
+
+// An ACS entry contains a CreatedEvent somewhere; the exact nesting depends on
+// Canton version (JsActiveContract vs. bare createdEvent). Probe for both.
+function extractAmuletInitialAmount(entry: unknown): string | null {
+  if (!entry || typeof entry !== 'object') return null;
+  const e = entry as Record<string, unknown>;
+  const contractEntry = (e.contractEntry as Record<string, unknown> | undefined) ?? e;
+  const active = (contractEntry?.JsActiveContract as Record<string, unknown> | undefined) ?? contractEntry;
+  const created = (active?.createdEvent as Record<string, unknown> | undefined) ?? (e.createdEvent as Record<string, unknown> | undefined);
+  if (!created) return null;
+  const arg =
+    (created.createArgument as Record<string, unknown> | undefined) ??
+    (created.createArguments as Record<string, unknown> | undefined);
+  if (!arg) return null;
+  const amount = arg.amount as Record<string, unknown> | undefined;
+  const init = amount?.initialAmount;
+  if (init === undefined || init === null) return null;
+  return String(init);
+}
+
 function hexToBytes(hex: string): Uint8Array {
   const clean = hex.replace(/^0x/i, '').trim();
   if (clean.length % 2 !== 0) throw new Error('hex string has odd length');
@@ -249,6 +313,7 @@ function App() {
 
   // Ledger query/submit state
   const [queryResponses, setQueryResponses] = useState<Array<{ timestamp: Date; data: unknown }>>([]);
+  const [balance, setBalance] = useState<AmuletBalance | null>(null);
   const [transactions, setTransactions] = useState<sdk.dappAPI.TxChangedEvent[]>([]);
 
   // WalletConnect state
@@ -704,6 +769,75 @@ function App() {
     }
   }
 
+  async function handleQueryBalance() {
+    if (!primaryParty) {
+      addLog('error', '[Balance] No primary party — wait for accounts to load');
+      return;
+    }
+    setLoading('balance');
+    addLog('info', `[Balance] Querying active Amulet contracts for ${primaryParty}...`);
+    try {
+      // Step 1: snapshot the ledger end to pin the ACS query to a deterministic
+      // offset (required by /v2/state/active-contracts).
+      const endResp = await sdk.ledgerApi({ requestMethod: 'get', resource: '/v2/state/ledger-end' });
+      const endData = JSON.parse(endResp.response) as { offset?: number | string };
+      const activeAtOffset = endData.offset;
+      if (activeAtOffset === undefined) throw new Error('Ledger end did not return an offset');
+
+      // Step 2: query active contracts filtered by template + owning party.
+      const body = {
+        filter: {
+          filtersByParty: {
+            [primaryParty]: {
+              cumulative: [
+                {
+                  identifierFilter: {
+                    TemplateFilter: {
+                      value: {
+                        templateId: '#splice-amulet:Splice.Amulet:Amulet',
+                        includeCreatedEventBlob: false,
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+        verbose: false,
+        activeAtOffset,
+      };
+      const acsResp = await sdk.ledgerApi({
+        requestMethod: 'post',
+        resource: '/v2/state/active-contracts',
+        body,
+      });
+
+      // Step 3: parse + sum initialAmount across contracts.
+      const entries = parseAcsEntries(acsResp.response);
+      const amounts: string[] = [];
+      let total = 0;
+      for (const entry of entries) {
+        const amt = extractAmuletInitialAmount(entry);
+        if (amt === null) continue;
+        amounts.push(amt);
+        const n = Number(amt);
+        if (!Number.isNaN(n)) total += n;
+      }
+
+      const result: AmuletBalance = { total, contractCount: amounts.length, amounts, queriedAt: new Date() };
+      setBalance(result);
+      addLog(
+        'success',
+        `[Balance] ${amounts.length} active Amulet contract(s) at offset ${activeAtOffset}; total initialAmount = ${total}`,
+      );
+    } catch (e) {
+      addLog('error', `[Balance] Query failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLoading(null);
+    }
+  }
+
   async function handleCreatePing() {
     if (!primaryParty) return;
     setLoading('submit');
@@ -915,6 +1049,10 @@ function App() {
       {activeTab === 'accounts' && (
         <AccountsTab
           accounts={accounts}
+          primaryParty={primaryParty}
+          balance={balance}
+          balanceLoading={loading === 'balance'}
+          onQueryBalance={handleQueryBalance}
           onCopy={async (value, label) => {
             try {
               await navigator.clipboard.writeText(value);
@@ -1223,9 +1361,17 @@ function App() {
 // ============================================================
 function AccountsTab({
   accounts,
+  primaryParty,
+  balance,
+  balanceLoading,
+  onQueryBalance,
   onCopy,
 }: {
   accounts: sdk.dappAPI.Wallet[];
+  primaryParty?: string;
+  balance: AmuletBalance | null;
+  balanceLoading: boolean;
+  onQueryBalance: () => void;
   onCopy: (value: string, label: string) => void;
 }) {
   if (accounts.length === 0) {
@@ -1246,44 +1392,94 @@ function AccountsTab({
   });
 
   return (
-    <section className="card">
-      <h2>Accounts ({accounts.length})</h2>
-      <div className="accounts-list">
-        {sorted.map((acc) => (
-          <div
-            key={acc.partyId}
-            className={`account-item ${acc.primary ? 'primary' : ''} ${acc.disabled ? 'disabled' : ''}`}
-          >
-            <div className="account-row">
-              <span className="account-label">partyId:</span>
-              <code className="account-value">{acc.partyId}</code>
-              <button className="sign-copy" onClick={() => onCopy(acc.partyId, 'partyId')}>Copy</button>
-              {acc.primary && <span className="badge badge-primary">primary</span>}
-              {acc.disabled && <span className="badge badge-disabled">disabled</span>}
-            </div>
-            {acc.publicKey && (
+    <>
+      <section className="card">
+        <h2>Accounts ({accounts.length})</h2>
+        <div className="accounts-list">
+          {sorted.map((acc) => (
+            <div
+              key={acc.partyId}
+              className={`account-item ${acc.primary ? 'primary' : ''} ${acc.disabled ? 'disabled' : ''}`}
+            >
               <div className="account-row">
-                <span className="account-label">publicKey:</span>
-                <code className="account-value wrap">{acc.publicKey}</code>
-                <button className="sign-copy" onClick={() => onCopy(acc.publicKey, 'publicKey')}>Copy</button>
+                <span className="account-label">partyId:</span>
+                <code className="account-value">{acc.partyId}</code>
+                <button className="sign-copy" onClick={() => onCopy(acc.partyId, 'partyId')}>Copy</button>
+                {acc.primary && <span className="badge badge-primary">primary</span>}
+                {acc.disabled && <span className="badge badge-disabled">disabled</span>}
               </div>
+              {acc.publicKey && (
+                <div className="account-row">
+                  <span className="account-label">publicKey:</span>
+                  <code className="account-value wrap">{acc.publicKey}</code>
+                  <button className="sign-copy" onClick={() => onCopy(acc.publicKey, 'publicKey')}>Copy</button>
+                </div>
+              )}
+              {acc.namespace && (
+                <div className="account-row account-row-meta">
+                  <span className="account-label">namespace:</span>
+                  <code className="account-value wrap">{acc.namespace}</code>
+                </div>
+              )}
+              {acc.networkId && (
+                <div className="account-row account-row-meta">
+                  <span className="account-label">network:</span>
+                  <code className="account-value">{acc.networkId}</code>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="card">
+        <h2>Wallet Balance</h2>
+        <p className="hint">
+          Queries <code>sdk.ledgerApi()</code> for active <code>#splice-amulet:Splice.Amulet:Amulet</code>
+          contracts owned by your primary party, then sums their <code>amount.initialAmount</code> fields.
+        </p>
+        <div className="button-row">
+          <button onClick={onQueryBalance} disabled={balanceLoading || !primaryParty}>
+            {balanceLoading ? 'Querying…' : 'Query Wallet Balance'}
+          </button>
+        </div>
+        {balance && (
+          <div className="balance-result">
+            <div className="balance-total">
+              <span className="balance-total-label">Total (Σ initialAmount)</span>
+              <span className="balance-total-value">
+                {balance.total.toLocaleString(undefined, { maximumFractionDigits: 10 })} CC
+              </span>
+            </div>
+            <div className="balance-row balance-row-meta">
+              <span className="balance-label">Active contracts:</span>
+              <span>{balance.contractCount}</span>
+            </div>
+            <div className="balance-row balance-row-meta">
+              <span className="balance-label">Queried at:</span>
+              <span>{balance.queriedAt.toLocaleTimeString()}</span>
+            </div>
+            {balance.amounts.length > 0 && (
+              <details className="balance-breakdown">
+                <summary>Per-contract initial amounts ({balance.amounts.length})</summary>
+                <ul>
+                  {balance.amounts.map((a, i) => (
+                    <li key={i}>
+                      <code>{a}</code>
+                    </li>
+                  ))}
+                </ul>
+              </details>
             )}
-            {acc.namespace && (
-              <div className="account-row account-row-meta">
-                <span className="account-label">namespace:</span>
-                <code className="account-value wrap">{acc.namespace}</code>
-              </div>
-            )}
-            {acc.networkId && (
-              <div className="account-row account-row-meta">
-                <span className="account-label">network:</span>
-                <code className="account-value">{acc.networkId}</code>
-              </div>
+            {balance.contractCount === 0 && (
+              <p className="hint balance-empty">
+                No active Amulet contracts found — wallet balance is 0 for this template.
+              </p>
             )}
           </div>
-        ))}
-      </div>
-    </section>
+        )}
+      </section>
+    </>
   );
 }
 
