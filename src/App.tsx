@@ -126,6 +126,34 @@ function detectExtension(): Promise<boolean> {
 //   UI/audit correlation in the dApp's own data plane).
 // We return null fields rather than throwing — older gateways may omit
 // either query param.
+// Surfaces rejection values that aren't `Error` instances — the dApp SDK
+// propagates JSON-RPC errors as `{ code, message, data? }` (and sometimes
+// nested under `.error`), and `String(obj)` gives the useless "[object
+// Object]". Walks a few common shapes; falls back to JSON.stringify.
+function formatErr(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (e === null || e === undefined) return String(e);
+  if (typeof e !== 'object') return String(e);
+  const obj = e as Record<string, unknown>;
+  const fromShape = (o: Record<string, unknown>) => {
+    const msg = typeof o.message === 'string' ? (o.message as string) : undefined;
+    const code = typeof o.code === 'number' || typeof o.code === 'string' ? o.code : undefined;
+    if (msg !== undefined) return code !== undefined ? `${code}: ${msg}` : msg;
+    return null;
+  };
+  const top = fromShape(obj);
+  if (top !== null) return top;
+  if (obj.error && typeof obj.error === 'object') {
+    const nested = fromShape(obj.error as Record<string, unknown>);
+    if (nested !== null) return nested;
+  }
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return '[unstringifiable]';
+  }
+}
+
 function parseUserUrlIds(userUrl: string | undefined): { transactionId: string | null; commandId: string | null } {
   if (!userUrl) return { transactionId: null, commandId: null };
   try {
@@ -503,7 +531,7 @@ function App() {
     if (isConnected) {
       sdk.listAccounts()
         .then((accs) => setAccounts(accs))
-        .catch((err) => addLog('error', `listAccounts failed: ${err instanceof Error ? err.message : String(err)}`));
+        .catch((err) => addLog('error', `listAccounts failed: ${formatErr(err)}`));
     }
   }, [isConnected, addLog]);
 
@@ -547,7 +575,7 @@ function App() {
     }
     QRCode.toDataURL(wcUri, { width: 256, margin: 2 })
       .then(setWcQrDataUrl)
-      .catch((e) => addLog('error', `[WC] QR render failed: ${e instanceof Error ? e.message : String(e)}`));
+      .catch((e) => addLog('error', `[WC] QR render failed: ${formatErr(e)}`));
   }, [wcUri, addLog]);
 
   // Auto-close QR modal when the session is established
@@ -564,7 +592,7 @@ function App() {
       const result = await rpcRequest<{ isConnected: boolean; reason: string }>('connect');
       addLog('success', `[Raw RPC] connect → ${prettyjson(result)}`);
     } catch (e) {
-      addLog('error', `[Raw RPC] connect failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[Raw RPC] connect failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -579,7 +607,7 @@ function App() {
       const s = await sdk.status();
       setStatusEvent(s);
     } catch (e) {
-      addLog('error', `[SDK] connect failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[SDK] connect failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -596,7 +624,7 @@ function App() {
       const s = await sdk.status();
       setStatusEvent(s);
     } catch (e) {
-      addLog('error', `[SDK] connect (extension) failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[SDK] connect (extension) failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -616,7 +644,7 @@ function App() {
       const s = await sdk.status();
       setStatusEvent(s);
     } catch (e) {
-      addLog('error', `[SDK] connect (WalletConnect) failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[SDK] connect (WalletConnect) failed: ${formatErr(e)}`);
     } finally {
       setWcUri(null);
       setLoading(null);
@@ -630,7 +658,7 @@ function App() {
       setWcCopied(true);
       setTimeout(() => setWcCopied(false), 1500);
     } catch (e) {
-      addLog('error', `[WC] Copy failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[WC] Copy failed: ${formatErr(e)}`);
     }
   }
 
@@ -645,7 +673,7 @@ function App() {
       setLedgerApiVersion(undefined);
       setTransactions([]);
     } catch (e) {
-      addLog('error', `[SDK] disconnect failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[SDK] disconnect failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -712,7 +740,7 @@ function App() {
           (cachedPubKey ? ' (pubKey from listAccounts cache)' : ' (no cached primary pubKey)'),
       );
     } catch (e) {
-      addLog('error', `signMessage failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `signMessage failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -723,7 +751,7 @@ function App() {
       await navigator.clipboard.writeText(sig);
       addLog('info', 'signature copied');
     } catch (e) {
-      addLog('error', `Copy failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `Copy failed: ${formatErr(e)}`);
     }
   }
 
@@ -775,7 +803,7 @@ function App() {
         `[verify] #${sm.id} (sig=${sigFormat}, pubKey=${format}, scheme=${matched ?? `none/${schemesToTry.join('|')}`}) → ${ok ? 'valid' : 'invalid'}`,
       );
     } catch (e) {
-      const error = e instanceof Error ? e.message : String(e);
+      const error = formatErr(e);
       setVerifyState((prev) => ({ ...prev, [sm.id]: { publicKey: pubKeyInput, result: { error } } }));
       addLog('error', `[verify] #${sm.id} failed: ${error}`);
     }
@@ -788,7 +816,7 @@ function App() {
       setStatusEvent(result);
       addLog('success', `[SDK] status → ${prettyjson(result)}`);
     } catch (e) {
-      addLog('error', `[SDK] status failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[SDK] status failed: ${formatErr(e)}`);
     }
   }
 
@@ -814,7 +842,7 @@ function App() {
       setQueryResponses((prev) => [{ timestamp: new Date(), data }, ...prev]);
       addLog('success', `[Ledger] Query result: ${prettyjson(data)}`);
     } catch (e) {
-      addLog('error', `[Ledger] Query failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[Ledger] Query failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -845,7 +873,7 @@ function App() {
         typeof r?.response === 'string' ? (r.response as string) : JSON.stringify(r);
       return { response };
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = formatErr(e);
       const isAccessDenied = /\b4100\b|access denied|denied for ledger resource/i.test(msg);
       if (!isAccessDenied) throw e;
 
@@ -875,9 +903,7 @@ function App() {
       } catch (fetchErr) {
         // Bare fetch failure is almost always CORS on the ledger gateway.
         throw new Error(
-          `Direct HTTP to ${url} failed (likely CORS — the ledger gateway must allow origin ${window.location.origin}): ${
-            fetchErr instanceof Error ? fetchErr.message : String(fetchErr)
-          }`,
+          `Direct HTTP to ${url} failed (likely CORS — the ledger gateway must allow origin ${window.location.origin}): ${formatErr(fetchErr)}`,
         );
       }
       const text = await res.text();
@@ -978,7 +1004,7 @@ function App() {
       } catch (e) {
         throw new Error(
           `Scan API fetch failed (likely CORS — origin ${window.location.origin} must be allowed by ${new URL(scanUrl).origin}): ${
-            e instanceof Error ? e.message : String(e)
+            formatErr(e)
           }`,
         );
       }
@@ -1072,7 +1098,7 @@ function App() {
             hit = { method, result };
             break;
           } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
+            const msg = formatErr(e);
             addLog('info', `[Balance] ${method} → ${msg.slice(0, 120)}`);
           }
         }
@@ -1096,7 +1122,7 @@ function App() {
               `[Balance] via Scan API (asOfEndOfRound=${scanned.asOfEndOfRound}): total = ${scanned.total}`,
             );
           } catch (scanErr) {
-            addLog('error', `[Balance] Scan API failed: ${scanErr instanceof Error ? scanErr.message : String(scanErr)}`);
+            addLog('error', `[Balance] Scan API failed: ${formatErr(scanErr)}`);
           }
           return;
         }
@@ -1172,7 +1198,7 @@ function App() {
         addLog('info', '[Balance] no extractable offset; will POST active-contracts without one');
       }
     } catch (e) {
-      addLog('info', `[Balance] ledger-end unavailable (${e instanceof Error ? e.message : String(e)}); continuing without offset`);
+      addLog('info', `[Balance] ledger-end unavailable (${formatErr(e)}); continuing without offset`);
     }
 
     // Step 2: query active contracts. ALWAYS attempted, regardless of step 1.
@@ -1230,7 +1256,7 @@ function App() {
         `[Balance] parsed ${entries.length} entry(ies), ${amounts.length} with amount; total = ${total}`,
       );
     } catch (e) {
-      addLog('error', `[Balance] active-contracts failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[Balance] active-contracts failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -1254,7 +1280,7 @@ function App() {
       );
       if (userUrl) addLog('info', `[Ledger] approval URL: ${userUrl}`);
     } catch (e) {
-      addLog('error', `[Ledger] prepareExecute failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[Ledger] prepareExecute failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -1328,7 +1354,7 @@ function App() {
       });
       addLog('success', `[Hybrid] Transaction executed → ${executeResult.response}`);
     } catch (e) {
-      addLog('error', `[Hybrid] Failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[Hybrid] Failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -1466,7 +1492,7 @@ function App() {
               await navigator.clipboard.writeText(value);
               addLog('info', `[accounts] ${label} copied`);
             } catch (e) {
-              addLog('error', `Copy failed: ${e instanceof Error ? e.message : String(e)}`);
+              addLog('error', `Copy failed: ${formatErr(e)}`);
             }
           }}
         />
@@ -1948,7 +1974,7 @@ function RawTab({ extensionDetected, addLog }: TabProps) {
       setRawAccounts([]);
       setSignature(null);
     } catch (e) {
-      addLog('error', `[Raw] disconnect failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[Raw] disconnect failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -1961,7 +1987,7 @@ function RawTab({ extensionDetected, addLog }: TabProps) {
       const result = await rpcRequest('status');
       addLog('success', `[Raw] status → ${prettyjson(result)}`);
     } catch (e) {
-      addLog('error', `[Raw] status failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[Raw] status failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -1974,7 +2000,7 @@ function RawTab({ extensionDetected, addLog }: TabProps) {
       const result = await rpcRequest('getActiveNetwork');
       addLog('success', `[Raw] getActiveNetwork → ${prettyjson(result)}`);
     } catch (e) {
-      addLog('error', `[Raw] getActiveNetwork failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[Raw] getActiveNetwork failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -1988,7 +2014,7 @@ function RawTab({ extensionDetected, addLog }: TabProps) {
       addLog('success', `[Raw] listAccounts → ${prettyjson(result)}`);
       setRawAccounts(result);
     } catch (e) {
-      addLog('error', `[Raw] listAccounts failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[Raw] listAccounts failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -2001,7 +2027,7 @@ function RawTab({ extensionDetected, addLog }: TabProps) {
       const result = await rpcRequest<{ partyId: string; primary: boolean }>('getPrimaryAccount');
       addLog('success', `[Raw] getPrimaryAccount → ${prettyjson(result)}`);
     } catch (e) {
-      addLog('error', `[Raw] getPrimaryAccount failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[Raw] getPrimaryAccount failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -2016,7 +2042,7 @@ function RawTab({ extensionDetected, addLog }: TabProps) {
       addLog('success', `[Raw] signMessage → ${result}`);
       setSignature(result);
     } catch (e) {
-      addLog('error', `[Raw] signMessage failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[Raw] signMessage failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
