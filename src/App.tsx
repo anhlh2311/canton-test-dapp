@@ -117,6 +117,28 @@ function detectExtension(): Promise<boolean> {
 // ============================================================
 // Ping contract command builder (from splice-wallet-kernel Ping example)
 // ============================================================
+// wallet-gateway-remote ≥ 1.1.0 returns BOTH ids on prepareExecute, encoded
+// in the userUrl query string:
+//   http://.../approve/index.html?transactionId=<UUID>&commandId=<UUID>&closeafteraction
+// - transactionId: gateway-store primary key (use for user-API lookups:
+//   execute / getTransaction / deleteTransaction).
+// - commandId: app-level id, echoed from params or auto-generated (use for
+//   UI/audit correlation in the dApp's own data plane).
+// We return null fields rather than throwing — older gateways may omit
+// either query param.
+function parseUserUrlIds(userUrl: string | undefined): { transactionId: string | null; commandId: string | null } {
+  if (!userUrl) return { transactionId: null, commandId: null };
+  try {
+    const params = new URL(userUrl).searchParams;
+    return {
+      transactionId: params.get('transactionId'),
+      commandId: params.get('commandId'),
+    };
+  } catch {
+    return { transactionId: null, commandId: null };
+  }
+}
+
 function createPingCommand(ledgerApiVersion: string | undefined, party: string) {
   const packageName = ledgerApiVersion?.startsWith('3.3.')
     ? 'AdminWorkflows'
@@ -335,6 +357,14 @@ function App() {
   // Ledger query/submit state
   const [queryResponses, setQueryResponses] = useState<Array<{ timestamp: Date; data: unknown }>>([]);
   const [balance, setBalance] = useState<AmuletBalance | null>(null);
+  // Latest prepareExecute response, surfaced in the Ledger Submit tab so
+  // the user can copy both ids and correlate with the wallet popup / backend.
+  const [lastPrepareExecute, setLastPrepareExecute] = useState<{
+    timestamp: Date;
+    userUrl: string | undefined;
+    transactionId: string | null;
+    commandId: string | null;
+  } | null>(null);
   const [transactions, setTransactions] = useState<sdk.dappAPI.TxChangedEvent[]>([]);
 
   // WalletConnect state
@@ -1211,11 +1241,18 @@ function App() {
     setLoading('submit');
     addLog('info', `[Ledger] Creating Ping contract (party: ${primaryParty})...`);
     try {
-      await sdk.prepareExecute({
+      const result = (await sdk.prepareExecute({
         actAs: [primaryParty],
         ...createPingCommand(ledgerApiVersion, primaryParty),
-      });
-      addLog('success', '[Ledger] prepareExecute completed');
+      })) as { userUrl?: string } | null | undefined;
+      const userUrl = result?.userUrl;
+      const ids = parseUserUrlIds(userUrl);
+      setLastPrepareExecute({ timestamp: new Date(), userUrl, ...ids });
+      addLog(
+        'success',
+        `[Ledger] prepareExecute completed — transactionId=${ids.transactionId ?? 'n/a'}, commandId=${ids.commandId ?? 'n/a'}`,
+      );
+      if (userUrl) addLog('info', `[Ledger] approval URL: ${userUrl}`);
     } catch (e) {
       addLog('error', `[Ledger] prepareExecute failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -1620,6 +1657,40 @@ function App() {
               <p className="hint">
                 "Create Ping" uses sdk.prepareExecute(). "Hybrid Ping" prepares via ledgerApi, signs via extension (postMessage), executes via ledgerApi.
               </p>
+              {lastPrepareExecute && (
+                <div className="balance-result">
+                  <div className="account-row account-row-meta">
+                    <span className="account-label">prepared at:</span>
+                    <span className="account-value">{lastPrepareExecute.timestamp.toLocaleTimeString()}</span>
+                  </div>
+                  <div className="account-row">
+                    <span className="account-label">transactionId:</span>
+                    <code className="account-value wrap">{lastPrepareExecute.transactionId ?? '(not in userUrl)'}</code>
+                    {lastPrepareExecute.transactionId && (
+                      <button
+                        className="sign-copy"
+                        onClick={() => navigator.clipboard.writeText(lastPrepareExecute.transactionId as string).catch(() => {})}
+                      >Copy</button>
+                    )}
+                  </div>
+                  <div className="account-row">
+                    <span className="account-label">commandId:</span>
+                    <code className="account-value wrap">{lastPrepareExecute.commandId ?? '(not in userUrl)'}</code>
+                    {lastPrepareExecute.commandId && (
+                      <button
+                        className="sign-copy"
+                        onClick={() => navigator.clipboard.writeText(lastPrepareExecute.commandId as string).catch(() => {})}
+                      >Copy</button>
+                    )}
+                  </div>
+                  {lastPrepareExecute.userUrl && (
+                    <div className="account-row account-row-meta">
+                      <span className="account-label">userUrl:</span>
+                      <code className="account-value wrap">{lastPrepareExecute.userUrl}</code>
+                    </div>
+                  )}
+                </div>
+              )}
               {transactions.length > 0 && (
                 <div className="terminal-display">
                   <p className="terminal-count">Transactions: {transactions.length}</p>
