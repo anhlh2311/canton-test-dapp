@@ -1211,7 +1211,10 @@ function App() {
     setLoading('submit');
     addLog('info', `[Ledger] Creating Ping contract (party: ${primaryParty})...`);
     try {
-      await sdk.prepareExecute(createPingCommand(ledgerApiVersion, primaryParty));
+      await sdk.prepareExecute({
+        actAs: [primaryParty],
+        ...createPingCommand(ledgerApiVersion, primaryParty),
+      });
       addLog('success', '[Ledger] prepareExecute completed');
     } catch (e) {
       addLog('error', `[Ledger] prepareExecute failed: ${e instanceof Error ? e.message : String(e)}`);
