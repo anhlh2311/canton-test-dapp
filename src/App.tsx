@@ -11,6 +11,27 @@ const WC_PROPOSED_CHAINS = ((import.meta.env.VITE_CANTON_CHAIN_ID as string | un
   .map((s) => s.trim())
   .filter(Boolean);
 
+// Public Splice Scan API URLs per Canton network. Used as a fallback for
+// balance queries when the wallet denies canton_ledgerApi proxy and doesn't
+// expose ledger URL / custom balance methods (typical for restricted WC
+// mobile wallets like askardex-wallet). Override with VITE_SCAN_API_URL.
+//
+// DA mainnet SVs are listed in splice-wallet-kernel/api-specs/assets.json.
+// We pick sync.global as the default — switch via env var if CORS rejects.
+const KNOWN_SCAN_URLS_BY_NETWORK: Record<string, string> = {
+  'canton:da-mainnet': 'https://scan.sv-1.global.canton.network.sync.global/api/scan',
+  'canton:da-devnet': 'https://scan.sv-1.dev.global.canton.network.sync.global/api/scan',
+  'canton:da-testnet': 'https://scan.sv-1.test.global.canton.network.sync.global/api/scan',
+};
+
+function getConfiguredScanUrl(networkId: string | undefined): string | undefined {
+  const envOverride = (import.meta.env.VITE_SCAN_API_URL as string | undefined)?.trim();
+  if (envOverride) return envOverride.replace(/\/$/, '');
+  if (!networkId) return undefined;
+  const known = KNOWN_SCAN_URLS_BY_NETWORK[networkId];
+  return known ? known.replace(/\/$/, '') : undefined;
+}
+
 // ============================================================
 // Log infrastructure
 // ============================================================
@@ -96,6 +117,56 @@ function detectExtension(): Promise<boolean> {
 // ============================================================
 // Ping contract command builder (from splice-wallet-kernel Ping example)
 // ============================================================
+// wallet-gateway-remote ≥ 1.1.0 returns BOTH ids on prepareExecute, encoded
+// in the userUrl query string:
+//   http://.../approve/index.html?transactionId=<UUID>&commandId=<UUID>&closeafteraction
+// - transactionId: gateway-store primary key (use for user-API lookups:
+//   execute / getTransaction / deleteTransaction).
+// - commandId: app-level id, echoed from params or auto-generated (use for
+//   UI/audit correlation in the dApp's own data plane).
+// We return null fields rather than throwing — older gateways may omit
+// either query param.
+// Surfaces rejection values that aren't `Error` instances — the dApp SDK
+// propagates JSON-RPC errors as `{ code, message, data? }` (and sometimes
+// nested under `.error`), and `String(obj)` gives the useless "[object
+// Object]". Walks a few common shapes; falls back to JSON.stringify.
+function formatErr(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (e === null || e === undefined) return String(e);
+  if (typeof e !== 'object') return String(e);
+  const obj = e as Record<string, unknown>;
+  const fromShape = (o: Record<string, unknown>) => {
+    const msg = typeof o.message === 'string' ? (o.message as string) : undefined;
+    const code = typeof o.code === 'number' || typeof o.code === 'string' ? o.code : undefined;
+    if (msg !== undefined) return code !== undefined ? `${code}: ${msg}` : msg;
+    return null;
+  };
+  const top = fromShape(obj);
+  if (top !== null) return top;
+  if (obj.error && typeof obj.error === 'object') {
+    const nested = fromShape(obj.error as Record<string, unknown>);
+    if (nested !== null) return nested;
+  }
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return '[unstringifiable]';
+  }
+}
+
+function parseUserUrlIds(userUrl: string | undefined): { transactionId: string | null; commandId: string | null } {
+  if (!userUrl) return { transactionId: null, commandId: null };
+  try {
+    const params = new URL(userUrl).searchParams;
+    return {
+      transactionId: params.get('transactionId'),
+      commandId: params.get('commandId'),
+    };
+  } catch {
+    return { transactionId: null, commandId: null };
+  }
+}
+
 function createPingCommand(ledgerApiVersion: string | undefined, party: string) {
   const packageName = ledgerApiVersion?.startsWith('3.3.')
     ? 'AdminWorkflows'
@@ -191,6 +262,70 @@ async function preImageBytes(message: string, scheme: 'utf8' | 'ginkgo'): Promis
 
 let signId = 0;
 
+// ============================================================
+// Amulet balance query (active contracts via Ledger API)
+// ============================================================
+interface AmuletBalance {
+  total: number;
+  contractCount: number;
+  amounts: string[];
+  queriedAt: Date;
+}
+
+// JSON Ledger API's /v2/state/active-contracts response shape varies by Canton
+// version: sometimes a JSON array, sometimes NDJSON, sometimes wrapped in an
+// envelope object. Try each in turn so the consumer doesn't have to care.
+function parseAcsEntries(response: string): unknown[] {
+  const trimmed = response.trim();
+  if (!trimmed) return [];
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed && typeof parsed === 'object') {
+      const obj = parsed as Record<string, unknown>;
+      if (Array.isArray(obj.acs)) return obj.acs;
+      if (Array.isArray(obj.contracts)) return obj.contracts;
+      if (Array.isArray(obj.contractEntries)) return obj.contractEntries;
+      // Single-entry envelope → wrap so caller sees a uniform array.
+      return [parsed];
+    }
+    return [];
+  } catch {
+    // Likely NDJSON. One JSON object per non-empty line.
+    return trimmed
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => {
+        try {
+          return JSON.parse(l);
+        } catch {
+          return null;
+        }
+      })
+      .filter((x): x is unknown => x !== null);
+  }
+}
+
+// An ACS entry contains a CreatedEvent somewhere; the exact nesting depends on
+// Canton version (JsActiveContract vs. bare createdEvent). Probe for both.
+function extractAmuletInitialAmount(entry: unknown): string | null {
+  if (!entry || typeof entry !== 'object') return null;
+  const e = entry as Record<string, unknown>;
+  const contractEntry = (e.contractEntry as Record<string, unknown> | undefined) ?? e;
+  const active = (contractEntry?.JsActiveContract as Record<string, unknown> | undefined) ?? contractEntry;
+  const created = (active?.createdEvent as Record<string, unknown> | undefined) ?? (e.createdEvent as Record<string, unknown> | undefined);
+  if (!created) return null;
+  const arg =
+    (created.createArgument as Record<string, unknown> | undefined) ??
+    (created.createArguments as Record<string, unknown> | undefined);
+  if (!arg) return null;
+  const amount = arg.amount as Record<string, unknown> | undefined;
+  const init = amount?.initialAmount;
+  if (init === undefined || init === null) return null;
+  return String(init);
+}
+
 function hexToBytes(hex: string): Uint8Array {
   const clean = hex.replace(/^0x/i, '').trim();
   if (clean.length % 2 !== 0) throw new Error('hex string has odd length');
@@ -249,6 +384,15 @@ function App() {
 
   // Ledger query/submit state
   const [queryResponses, setQueryResponses] = useState<Array<{ timestamp: Date; data: unknown }>>([]);
+  const [balance, setBalance] = useState<AmuletBalance | null>(null);
+  // Latest prepareExecute response, surfaced in the Ledger Submit tab so
+  // the user can copy both ids and correlate with the wallet popup / backend.
+  const [lastPrepareExecute, setLastPrepareExecute] = useState<{
+    timestamp: Date;
+    userUrl: string | undefined;
+    transactionId: string | null;
+    commandId: string | null;
+  } | null>(null);
   const [transactions, setTransactions] = useState<sdk.dappAPI.TxChangedEvent[]>([]);
 
   // WalletConnect state
@@ -387,7 +531,7 @@ function App() {
     if (isConnected) {
       sdk.listAccounts()
         .then((accs) => setAccounts(accs))
-        .catch((err) => addLog('error', `listAccounts failed: ${err instanceof Error ? err.message : String(err)}`));
+        .catch((err) => addLog('error', `listAccounts failed: ${formatErr(err)}`));
     }
   }, [isConnected, addLog]);
 
@@ -431,7 +575,7 @@ function App() {
     }
     QRCode.toDataURL(wcUri, { width: 256, margin: 2 })
       .then(setWcQrDataUrl)
-      .catch((e) => addLog('error', `[WC] QR render failed: ${e instanceof Error ? e.message : String(e)}`));
+      .catch((e) => addLog('error', `[WC] QR render failed: ${formatErr(e)}`));
   }, [wcUri, addLog]);
 
   // Auto-close QR modal when the session is established
@@ -448,7 +592,7 @@ function App() {
       const result = await rpcRequest<{ isConnected: boolean; reason: string }>('connect');
       addLog('success', `[Raw RPC] connect → ${prettyjson(result)}`);
     } catch (e) {
-      addLog('error', `[Raw RPC] connect failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[Raw RPC] connect failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -463,7 +607,7 @@ function App() {
       const s = await sdk.status();
       setStatusEvent(s);
     } catch (e) {
-      addLog('error', `[SDK] connect failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[SDK] connect failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -480,7 +624,7 @@ function App() {
       const s = await sdk.status();
       setStatusEvent(s);
     } catch (e) {
-      addLog('error', `[SDK] connect (extension) failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[SDK] connect (extension) failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -500,7 +644,7 @@ function App() {
       const s = await sdk.status();
       setStatusEvent(s);
     } catch (e) {
-      addLog('error', `[SDK] connect (WalletConnect) failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[SDK] connect (WalletConnect) failed: ${formatErr(e)}`);
     } finally {
       setWcUri(null);
       setLoading(null);
@@ -514,7 +658,7 @@ function App() {
       setWcCopied(true);
       setTimeout(() => setWcCopied(false), 1500);
     } catch (e) {
-      addLog('error', `[WC] Copy failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[WC] Copy failed: ${formatErr(e)}`);
     }
   }
 
@@ -529,7 +673,7 @@ function App() {
       setLedgerApiVersion(undefined);
       setTransactions([]);
     } catch (e) {
-      addLog('error', `[SDK] disconnect failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[SDK] disconnect failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -596,7 +740,7 @@ function App() {
           (cachedPubKey ? ' (pubKey from listAccounts cache)' : ' (no cached primary pubKey)'),
       );
     } catch (e) {
-      addLog('error', `signMessage failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `signMessage failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -607,7 +751,7 @@ function App() {
       await navigator.clipboard.writeText(sig);
       addLog('info', 'signature copied');
     } catch (e) {
-      addLog('error', `Copy failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `Copy failed: ${formatErr(e)}`);
     }
   }
 
@@ -659,7 +803,7 @@ function App() {
         `[verify] #${sm.id} (sig=${sigFormat}, pubKey=${format}, scheme=${matched ?? `none/${schemesToTry.join('|')}`}) → ${ok ? 'valid' : 'invalid'}`,
       );
     } catch (e) {
-      const error = e instanceof Error ? e.message : String(e);
+      const error = formatErr(e);
       setVerifyState((prev) => ({ ...prev, [sm.id]: { publicKey: pubKeyInput, result: { error } } }));
       addLog('error', `[verify] #${sm.id} failed: ${error}`);
     }
@@ -672,7 +816,7 @@ function App() {
       setStatusEvent(result);
       addLog('success', `[SDK] status → ${prettyjson(result)}`);
     } catch (e) {
-      addLog('error', `[SDK] status failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[SDK] status failed: ${formatErr(e)}`);
     }
   }
 
@@ -698,7 +842,421 @@ function App() {
       setQueryResponses((prev) => [{ timestamp: new Date(), data }, ...prev]);
       addLog('success', `[Ledger] Query result: ${prettyjson(data)}`);
     } catch (e) {
-      addLog('error', `[Ledger] Query failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[Ledger] Query failed: ${formatErr(e)}`);
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  // Read-path helper that works for both extension wallets (proxy through
+  // canton_ledgerApi) and WalletConnect mobile wallets (call the Canton Ledger
+  // API directly with the URL + Bearer token the wallet hands back via
+  // canton_status / canton_getActiveNetwork).
+  //
+  // Try the proxy first — it's the spec-default and is what Ginkgo/extensions
+  // expect. If the wallet returns 4100 "Access denied for ledger resource"
+  // (common for /v2/state/* paths on restricted WC mobile wallets), fall back
+  // to a direct HTTP fetch using statusEvent.network.{ledgerApi, accessToken}.
+  async function callLedgerApi(
+    method: 'get' | 'post',
+    resource: string,
+    bodyParam?: unknown,
+  ): Promise<{ response: string }> {
+    try {
+      const r = (await sdk.ledgerApi({
+        requestMethod: method,
+        resource,
+        // sdk types narrow body to a specific shape; relax for arbitrary JSON.
+        body: bodyParam as never,
+      })) as Record<string, unknown>;
+      const response =
+        typeof r?.response === 'string' ? (r.response as string) : JSON.stringify(r);
+      return { response };
+    } catch (e) {
+      const msg = formatErr(e);
+      const isAccessDenied = /\b4100\b|access denied|denied for ledger resource/i.test(msg);
+      if (!isAccessDenied) throw e;
+
+      const ledgerUrl = statusEvent?.network?.ledgerApi;
+      const token = statusEvent?.network?.accessToken;
+      if (!ledgerUrl) {
+        throw new Error(
+          `Wallet denied ${resource} via canton_ledgerApi AND did not expose statusEvent.network.ledgerApi for a direct-HTTP fallback`,
+        );
+      }
+      addLog(
+        'info',
+        `[Ledger] Proxy denied ${resource} (${msg}); falling back to direct HTTP at ${ledgerUrl}`,
+      );
+
+      const url = `${ledgerUrl.replace(/\/$/, '')}${resource.startsWith('/') ? resource : '/' + resource}`;
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      if (method === 'post') headers['Content-Type'] = 'application/json';
+      let res: Response;
+      try {
+        res = await fetch(url, {
+          method: method.toUpperCase(),
+          headers,
+          body: method === 'post' && bodyParam !== undefined ? JSON.stringify(bodyParam) : undefined,
+        });
+      } catch (fetchErr) {
+        // Bare fetch failure is almost always CORS on the ledger gateway.
+        throw new Error(
+          `Direct HTTP to ${url} failed (likely CORS — the ledger gateway must allow origin ${window.location.origin}): ${formatErr(fetchErr)}`,
+        );
+      }
+      const text = await res.text();
+      if (!res.ok) {
+        throw new Error(`Direct HTTP ${res.status} ${res.statusText}: ${text.slice(0, 200)}`);
+      }
+      return { response: text };
+    }
+  }
+
+  // Candidate wallet-side methods to probe for direct balance reads on
+  // WC mobile wallets. These aren't in the CIP-0103 standard, but specific
+  // wallet implementations (Splice-CN-style backends) may expose one of them.
+  // We probe each via signClient.request and use whichever doesn't throw.
+  const WC_BALANCE_PROBE_METHODS = [
+    'canton_getBalance',
+    'canton_getAmuletBalance',
+    'canton_getWalletBalance',
+    'canton_listAmulets',
+    'canton_listHoldings',
+    'splice_getBalance',
+    'splice_listHoldings',
+  ];
+
+  // Walk a heterogeneous wallet response looking for the first plausible
+  // balance-like number. Handles:
+  //   - { balance: "123.45" } or { balance: 123.45 }
+  //   - { total: ... }, { amount: ... }, { totalAmount: ... }
+  //   - { balances: [{ amount, instrumentId: {id: "Amulet"} }, ...] }
+  //   - { amulets: [{ amount: { initialAmount } }, ...] }
+  //   - { holdings: [{ amount: ... }, ...] }
+  // Returns { total, contractCount?, amounts[] } or null if nothing matches.
+  function extractBalanceFromWalletResponse(result: unknown): {
+    total: number;
+    amounts: string[];
+  } | null {
+    if (result === null || result === undefined) return null;
+    if (typeof result === 'string') {
+      const n = Number(result);
+      return Number.isFinite(n) ? { total: n, amounts: [result] } : null;
+    }
+    if (typeof result === 'number') return { total: result, amounts: [String(result)] };
+    if (typeof result !== 'object') return null;
+    const obj = result as Record<string, unknown>;
+
+    // Direct scalar fields.
+    for (const k of ['balance', 'total', 'amount', 'totalAmount', 'totalBalance', 'walletBalance']) {
+      const v = obj[k];
+      if (typeof v === 'string' || typeof v === 'number') {
+        const n = Number(v);
+        if (Number.isFinite(n)) return { total: n, amounts: [String(v)] };
+      }
+    }
+
+    // Array-shaped (amulets / holdings / balances).
+    for (const k of ['amulets', 'holdings', 'balances', 'contracts', 'data']) {
+      const v = obj[k];
+      if (!Array.isArray(v)) continue;
+      const amounts: string[] = [];
+      let total = 0;
+      for (const item of v) {
+        if (item === null || typeof item !== 'object') continue;
+        const it = item as Record<string, unknown>;
+        // Try common amount locations.
+        const rawAmt =
+          (it.amount && typeof it.amount === 'object'
+            ? ((it.amount as Record<string, unknown>).initialAmount ?? (it.amount as Record<string, unknown>).amount)
+            : it.amount) ??
+          it.balance ??
+          it.total ??
+          it.value;
+        if (rawAmt === undefined || rawAmt === null) continue;
+        const s = String(rawAmt);
+        amounts.push(s);
+        const n = Number(s);
+        if (Number.isFinite(n)) total += n;
+      }
+      if (amounts.length > 0) return { total, amounts };
+    }
+
+    return null;
+  }
+
+  // Splice Scan API balance flow (public, no wallet involvement).
+  // Two GETs against `<scanUrl>/v0/...`:
+  //   1. /v0/closed-rounds  → array of recent closed mining rounds (latest is what
+  //                            we need; the deprecated /v0/wallet-balance is
+  //                            "balance as of end of round N")
+  //   2. /v0/wallet-balance?party_id=...&asOfEndOfRound=N
+  //
+  // Defensive about response shapes — closed-rounds might be a JSON array,
+  // an object with `closed_rounds`, or wrapped in ContractWithState envelopes.
+  async function queryBalanceViaScan(scanUrl: string, partyId: string): Promise<AmuletBalance & { asOfEndOfRound: number }> {
+    const fetchJson = async (url: string): Promise<unknown> => {
+      let res: Response;
+      try {
+        res = await fetch(url);
+      } catch (e) {
+        throw new Error(
+          `Scan API fetch failed (likely CORS — origin ${window.location.origin} must be allowed by ${new URL(scanUrl).origin}): ${
+            formatErr(e)
+          }`,
+        );
+      }
+      const text = await res.text();
+      if (!res.ok) throw new Error(`${url} → HTTP ${res.status}: ${text.slice(0, 200)}`);
+      try { return JSON.parse(text); } catch { return text; }
+    };
+
+    addLog('info', `[Balance] Scan: GET ${scanUrl}/v0/closed-rounds`);
+    const roundsResp = await fetchJson(`${scanUrl}/v0/closed-rounds`);
+    const roundsArr =
+      Array.isArray(roundsResp)
+        ? roundsResp
+        : (roundsResp as Record<string, unknown> | null)?.closed_rounds ??
+          (roundsResp as Record<string, unknown> | null)?.rounds ??
+          [];
+    if (!Array.isArray(roundsArr) || roundsArr.length === 0) {
+      throw new Error(`No closed rounds in response: ${JSON.stringify(roundsResp).slice(0, 200)}`);
+    }
+    // Pick the highest round number. Each entry might be a ContractWithState
+    // ({contract:{payload:{round:{number:"42"}}}}) or a flatter shape — probe.
+    const extractRoundNumber = (entry: unknown): number | null => {
+      if (entry === null || entry === undefined) return null;
+      if (typeof entry === 'number') return entry;
+      if (typeof entry === 'string') { const n = Number(entry); return Number.isFinite(n) ? n : null; }
+      if (typeof entry !== 'object') return null;
+      const e = entry as Record<string, unknown>;
+      const payload =
+        ((e.contract as Record<string, unknown> | undefined)?.payload as Record<string, unknown> | undefined) ??
+        (e.payload as Record<string, unknown> | undefined) ??
+        e;
+      const round =
+        (payload?.round as Record<string, unknown> | undefined) ??
+        (payload as Record<string, unknown> | undefined);
+      const num = round?.number ?? round?.round ?? payload?.round_number;
+      if (num === undefined || num === null) return null;
+      const n = Number(num);
+      return Number.isFinite(n) ? n : null;
+    };
+    const roundNumbers = roundsArr.map(extractRoundNumber).filter((n): n is number => n !== null);
+    if (roundNumbers.length === 0) {
+      throw new Error(`Could not extract round numbers from: ${JSON.stringify(roundsArr).slice(0, 300)}`);
+    }
+    const asOfEndOfRound = Math.max(...roundNumbers);
+    addLog('info', `[Balance] Latest closed round: ${asOfEndOfRound}`);
+
+    const balanceUrl = `${scanUrl}/v0/wallet-balance?party_id=${encodeURIComponent(partyId)}&asOfEndOfRound=${asOfEndOfRound}`;
+    addLog('info', `[Balance] Scan: GET ${balanceUrl}`);
+    const balanceResp = await fetchJson(balanceUrl) as Record<string, unknown>;
+    const raw = balanceResp?.wallet_balance;
+    if (raw === undefined || raw === null) {
+      throw new Error(`No wallet_balance in response: ${JSON.stringify(balanceResp).slice(0, 200)}`);
+    }
+    const amountStr = String(raw);
+    const total = Number(amountStr);
+    if (!Number.isFinite(total)) throw new Error(`Invalid wallet_balance value: ${amountStr}`);
+
+    return {
+      total,
+      contractCount: 1,
+      amounts: [amountStr],
+      queriedAt: new Date(),
+      asOfEndOfRound,
+    };
+  }
+
+  async function handleQueryBalance() {
+    if (!primaryParty) {
+      addLog('error', '[Balance] No primary party — wait for accounts to load');
+      return;
+    }
+    setLoading('balance');
+    const providerType = statusEvent?.provider?.providerType;
+    addLog('info', `[Balance] Querying for ${primaryParty} (provider: ${providerType ?? 'unknown'})...`);
+
+    // Path A: WC mobile wallets — probe custom wallet methods. The standard
+    // canton_ledgerApi is denied with 4100 for /v2/state/* on most WC wallets,
+    // and there's no spec method for balance, so we try wallet-specific
+    // extensions and surface every attempt in the log.
+    if (providerType === 'mobile' && wcAdapter) {
+      try {
+        let hit: { method: string; result: unknown } | null = null;
+        for (const method of WC_BALANCE_PROBE_METHODS) {
+          try {
+            addLog('info', `[Balance] Probe → ${method}({partyId})`);
+            const result = await wcAdapter.rawRequest(method, { partyId: primaryParty });
+            addLog(
+              'success',
+              `[Balance] ${method} OK → ${JSON.stringify(result).slice(0, 200)}`,
+            );
+            hit = { method, result };
+            break;
+          } catch (e) {
+            const msg = formatErr(e);
+            addLog('info', `[Balance] ${method} → ${msg.slice(0, 120)}`);
+          }
+        }
+        if (!hit) {
+          // Wallet method probe exhausted — try public Splice Scan API instead.
+          const networkId = statusEvent?.network?.networkId;
+          const scanUrl = getConfiguredScanUrl(networkId);
+          if (!scanUrl) {
+            addLog(
+              'error',
+              `[Balance] No probed method succeeded and no Scan API URL for network "${networkId ?? 'unknown'}". Set VITE_SCAN_API_URL in .env.local to enable the Scan fallback.`,
+            );
+            return;
+          }
+          addLog('info', `[Balance] Wallet has no balance method; falling back to Splice Scan API at ${scanUrl}`);
+          try {
+            const scanned = await queryBalanceViaScan(scanUrl, primaryParty);
+            setBalance(scanned);
+            addLog(
+              'success',
+              `[Balance] via Scan API (asOfEndOfRound=${scanned.asOfEndOfRound}): total = ${scanned.total}`,
+            );
+          } catch (scanErr) {
+            addLog('error', `[Balance] Scan API failed: ${formatErr(scanErr)}`);
+          }
+          return;
+        }
+        const parsed = extractBalanceFromWalletResponse(hit.result);
+        if (!parsed) {
+          addLog(
+            'error',
+            `[Balance] ${hit.method} returned but I couldn't find a balance field in the response: ${JSON.stringify(
+              hit.result,
+            ).slice(0, 300)}`,
+          );
+          return;
+        }
+        setBalance({
+          total: parsed.total,
+          contractCount: parsed.amounts.length,
+          amounts: parsed.amounts,
+          queriedAt: new Date(),
+        });
+        addLog(
+          'success',
+          `[Balance] via ${hit.method}: ${parsed.amounts.length} entry(ies); total = ${parsed.total}`,
+        );
+      } finally {
+        setLoading(null);
+      }
+      return;
+    }
+
+    // Path B: extensions / remote gateways — keep the existing canton_ledgerApi
+    // + /v2/state/active-contracts flow. Falls through to the helper below.
+    addLog('info', `[Balance] Using canton_ledgerApi proxy (extension/remote path)`);
+
+    // sdk.ledgerApi() returns LedgerApiResult = { [k: string]: any }. Convention
+    // is { response: "<json-string>" }, but different gateways may return the
+    // body already parsed, or attach it under a different field. Normalize.
+    const body = (r: unknown): unknown => {
+      if (!r || typeof r !== 'object') return r;
+      const o = r as Record<string, unknown>;
+      if (typeof o.response === 'string') {
+        try { return JSON.parse(o.response); } catch { return o.response; }
+      }
+      return o.response ?? o;
+    };
+
+    // The gateway may return offset as a number, a string, or wrapped in
+    // { absolute }. Try each shape; reject objects we can't unwrap.
+    const extractOffset = (data: unknown): number | string | undefined => {
+      if (data === null || data === undefined) return undefined;
+      if (typeof data === 'number' || typeof data === 'string') return data;
+      if (typeof data === 'object') {
+        const o = data as Record<string, unknown>;
+        if (typeof o.offset === 'number' || typeof o.offset === 'string') return o.offset;
+        if (o.offset && typeof o.offset === 'object') {
+          const inner = o.offset as Record<string, unknown>;
+          if (typeof inner.absolute === 'number' || typeof inner.absolute === 'string') return inner.absolute;
+        }
+      }
+      return undefined;
+    };
+
+    // Step 1: best-effort fetch of the ledger end. Failure here does NOT block
+    // the ACS query — we just call it without `activeAtOffset` and let the
+    // gateway/Canton resolve "now" itself.
+    let activeAtOffset: number | string | undefined = undefined;
+    try {
+      addLog('info', '[Balance] GET /v2/state/ledger-end');
+      const endResp = await callLedgerApi('get', '/v2/state/ledger-end');
+      const endData = body(endResp);
+      addLog('info', `[Balance] ledger-end → ${JSON.stringify(endData).slice(0, 200)}`);
+      activeAtOffset = extractOffset(endData);
+      if (activeAtOffset === undefined) {
+        addLog('info', '[Balance] no extractable offset; will POST active-contracts without one');
+      }
+    } catch (e) {
+      addLog('info', `[Balance] ledger-end unavailable (${formatErr(e)}); continuing without offset`);
+    }
+
+    // Step 2: query active contracts. ALWAYS attempted, regardless of step 1.
+    try {
+      const acsBody: Record<string, unknown> = {
+        filter: {
+          filtersByParty: {
+            [primaryParty]: {
+              cumulative: [
+                {
+                  identifierFilter: {
+                    TemplateFilter: {
+                      value: {
+                        templateId: '#splice-amulet:Splice.Amulet:Amulet',
+                        includeCreatedEventBlob: false,
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+        verbose: false,
+      };
+      if (activeAtOffset !== undefined) acsBody.activeAtOffset = activeAtOffset;
+
+      addLog(
+        'info',
+        `[Balance] POST /v2/state/active-contracts ${
+          activeAtOffset === undefined ? '(no activeAtOffset)' : `(activeAtOffset=${activeAtOffset})`
+        }`,
+      );
+      const acsResp = await callLedgerApi('post', '/v2/state/active-contracts', acsBody);
+      const rawResponse =
+        typeof (acsResp as Record<string, unknown>)?.response === 'string'
+          ? ((acsResp as Record<string, unknown>).response as string)
+          : JSON.stringify(body(acsResp) ?? acsResp);
+      addLog('info', `[Balance] active-contracts ← ${rawResponse.slice(0, 200)}${rawResponse.length > 200 ? '…' : ''}`);
+
+      const entries = parseAcsEntries(rawResponse);
+      const amounts: string[] = [];
+      let total = 0;
+      for (const entry of entries) {
+        const amt = extractAmuletInitialAmount(entry);
+        if (amt === null) continue;
+        amounts.push(amt);
+        const n = Number(amt);
+        if (!Number.isNaN(n)) total += n;
+      }
+
+      setBalance({ total, contractCount: amounts.length, amounts, queriedAt: new Date() });
+      addLog(
+        'success',
+        `[Balance] parsed ${entries.length} entry(ies), ${amounts.length} with amount; total = ${total}`,
+      );
+    } catch (e) {
+      addLog('error', `[Balance] active-contracts failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -709,10 +1267,20 @@ function App() {
     setLoading('submit');
     addLog('info', `[Ledger] Creating Ping contract (party: ${primaryParty})...`);
     try {
-      await sdk.prepareExecute(createPingCommand(ledgerApiVersion, primaryParty));
-      addLog('success', '[Ledger] prepareExecute completed');
+      const result = (await sdk.prepareExecute({
+        actAs: [primaryParty],
+        ...createPingCommand(ledgerApiVersion, primaryParty),
+      })) as { userUrl?: string } | null | undefined;
+      const userUrl = result?.userUrl;
+      const ids = parseUserUrlIds(userUrl);
+      setLastPrepareExecute({ timestamp: new Date(), userUrl, ...ids });
+      addLog(
+        'success',
+        `[Ledger] prepareExecute completed — transactionId=${ids.transactionId ?? 'n/a'}, commandId=${ids.commandId ?? 'n/a'}`,
+      );
+      if (userUrl) addLog('info', `[Ledger] approval URL: ${userUrl}`);
     } catch (e) {
-      addLog('error', `[Ledger] prepareExecute failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[Ledger] prepareExecute failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -786,7 +1354,7 @@ function App() {
       });
       addLog('success', `[Hybrid] Transaction executed → ${executeResult.response}`);
     } catch (e) {
-      addLog('error', `[Hybrid] Failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[Hybrid] Failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -915,12 +1483,16 @@ function App() {
       {activeTab === 'accounts' && (
         <AccountsTab
           accounts={accounts}
+          primaryParty={primaryParty}
+          balance={balance}
+          balanceLoading={loading === 'balance'}
+          onQueryBalance={handleQueryBalance}
           onCopy={async (value, label) => {
             try {
               await navigator.clipboard.writeText(value);
               addLog('info', `[accounts] ${label} copied`);
             } catch (e) {
-              addLog('error', `Copy failed: ${e instanceof Error ? e.message : String(e)}`);
+              addLog('error', `Copy failed: ${formatErr(e)}`);
             }
           }}
         />
@@ -1111,6 +1683,40 @@ function App() {
               <p className="hint">
                 "Create Ping" uses sdk.prepareExecute(). "Hybrid Ping" prepares via ledgerApi, signs via extension (postMessage), executes via ledgerApi.
               </p>
+              {lastPrepareExecute && (
+                <div className="balance-result">
+                  <div className="account-row account-row-meta">
+                    <span className="account-label">prepared at:</span>
+                    <span className="account-value">{lastPrepareExecute.timestamp.toLocaleTimeString()}</span>
+                  </div>
+                  <div className="account-row">
+                    <span className="account-label">transactionId:</span>
+                    <code className="account-value wrap">{lastPrepareExecute.transactionId ?? '(not in userUrl)'}</code>
+                    {lastPrepareExecute.transactionId && (
+                      <button
+                        className="sign-copy"
+                        onClick={() => navigator.clipboard.writeText(lastPrepareExecute.transactionId as string).catch(() => {})}
+                      >Copy</button>
+                    )}
+                  </div>
+                  <div className="account-row">
+                    <span className="account-label">commandId:</span>
+                    <code className="account-value wrap">{lastPrepareExecute.commandId ?? '(not in userUrl)'}</code>
+                    {lastPrepareExecute.commandId && (
+                      <button
+                        className="sign-copy"
+                        onClick={() => navigator.clipboard.writeText(lastPrepareExecute.commandId as string).catch(() => {})}
+                      >Copy</button>
+                    )}
+                  </div>
+                  {lastPrepareExecute.userUrl && (
+                    <div className="account-row account-row-meta">
+                      <span className="account-label">userUrl:</span>
+                      <code className="account-value wrap">{lastPrepareExecute.userUrl}</code>
+                    </div>
+                  )}
+                </div>
+              )}
               {transactions.length > 0 && (
                 <div className="terminal-display">
                   <p className="terminal-count">Transactions: {transactions.length}</p>
@@ -1223,9 +1829,17 @@ function App() {
 // ============================================================
 function AccountsTab({
   accounts,
+  primaryParty,
+  balance,
+  balanceLoading,
+  onQueryBalance,
   onCopy,
 }: {
   accounts: sdk.dappAPI.Wallet[];
+  primaryParty?: string;
+  balance: AmuletBalance | null;
+  balanceLoading: boolean;
+  onQueryBalance: () => void;
   onCopy: (value: string, label: string) => void;
 }) {
   if (accounts.length === 0) {
@@ -1246,44 +1860,95 @@ function AccountsTab({
   });
 
   return (
-    <section className="card">
-      <h2>Accounts ({accounts.length})</h2>
-      <div className="accounts-list">
-        {sorted.map((acc) => (
-          <div
-            key={acc.partyId}
-            className={`account-item ${acc.primary ? 'primary' : ''} ${acc.disabled ? 'disabled' : ''}`}
-          >
-            <div className="account-row">
-              <span className="account-label">partyId:</span>
-              <code className="account-value">{acc.partyId}</code>
-              <button className="sign-copy" onClick={() => onCopy(acc.partyId, 'partyId')}>Copy</button>
-              {acc.primary && <span className="badge badge-primary">primary</span>}
-              {acc.disabled && <span className="badge badge-disabled">disabled</span>}
-            </div>
-            {acc.publicKey && (
+    <>
+      <section className="card">
+        <h2>Accounts ({accounts.length})</h2>
+        <div className="accounts-list">
+          {sorted.map((acc) => (
+            <div
+              key={acc.partyId}
+              className={`account-item ${acc.primary ? 'primary' : ''} ${acc.disabled ? 'disabled' : ''}`}
+            >
               <div className="account-row">
-                <span className="account-label">publicKey:</span>
-                <code className="account-value wrap">{acc.publicKey}</code>
-                <button className="sign-copy" onClick={() => onCopy(acc.publicKey, 'publicKey')}>Copy</button>
+                <span className="account-label">partyId:</span>
+                <code className="account-value">{acc.partyId}</code>
+                <button className="sign-copy" onClick={() => onCopy(acc.partyId, 'partyId')}>Copy</button>
+                {acc.primary && <span className="badge badge-primary">primary</span>}
+                {acc.disabled && <span className="badge badge-disabled">disabled</span>}
               </div>
+              {acc.publicKey && (
+                <div className="account-row">
+                  <span className="account-label">publicKey:</span>
+                  <code className="account-value wrap">{acc.publicKey}</code>
+                  <button className="sign-copy" onClick={() => onCopy(acc.publicKey, 'publicKey')}>Copy</button>
+                </div>
+              )}
+              {acc.namespace && (
+                <div className="account-row account-row-meta">
+                  <span className="account-label">namespace:</span>
+                  <code className="account-value wrap">{acc.namespace}</code>
+                </div>
+              )}
+              {acc.networkId && (
+                <div className="account-row account-row-meta">
+                  <span className="account-label">network:</span>
+                  <code className="account-value">{acc.networkId}</code>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="card">
+        <h2>Wallet Balance</h2>
+        <p className="hint">
+          Queries <code>sdk.ledgerApi()</code> for active <code>#splice-amulet:Splice.Amulet:Amulet</code>
+          contracts owned by your primary party, then sums their <code>amount.initialAmount</code> fields.
+        </p>
+        <div className="button-row">
+          <button onClick={onQueryBalance} disabled={balanceLoading || !primaryParty}>
+            {balanceLoading ? 'Querying…' : 'Query Wallet Balance'}
+          </button>
+        </div>
+        {balance && (
+          <div className="balance-result">
+            <div className="balance-total">
+              <span className="balance-total-label">Total (Σ initialAmount)</span>
+              <span className="balance-total-value">
+                {balance.total.toLocaleString(undefined, { maximumFractionDigits: 10 })} CC
+              </span>
+            </div>
+            <div className="balance-row balance-row-meta">
+              <span className="balance-label">Active contracts:</span>
+              <span>{balance.contractCount}</span>
+            </div>
+            <div className="balance-row balance-row-meta">
+              <span className="balance-label">Queried at:</span>
+              <span>{balance.queriedAt.toLocaleTimeString()}</span>
+            </div>
+            {balance.amounts.length > 0 && (
+              <details className="balance-breakdown">
+                <summary>Per-contract initial amounts ({balance.amounts.length})</summary>
+                <ul>
+                  {balance.amounts.map((a, i) => (
+                    <li key={i}>
+                      <code>{a}</code>
+                    </li>
+                  ))}
+                </ul>
+              </details>
             )}
-            {acc.namespace && (
-              <div className="account-row account-row-meta">
-                <span className="account-label">namespace:</span>
-                <code className="account-value wrap">{acc.namespace}</code>
-              </div>
-            )}
-            {acc.networkId && (
-              <div className="account-row account-row-meta">
-                <span className="account-label">network:</span>
-                <code className="account-value">{acc.networkId}</code>
-              </div>
+            {balance.contractCount === 0 && (
+              <p className="hint balance-empty">
+                No active Amulet contracts found — wallet balance is 0 for this template.
+              </p>
             )}
           </div>
-        ))}
-      </div>
-    </section>
+        )}
+      </section>
+
+    </>
   );
 }
 
@@ -1309,7 +1974,7 @@ function RawTab({ extensionDetected, addLog }: TabProps) {
       setRawAccounts([]);
       setSignature(null);
     } catch (e) {
-      addLog('error', `[Raw] disconnect failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[Raw] disconnect failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -1322,7 +1987,7 @@ function RawTab({ extensionDetected, addLog }: TabProps) {
       const result = await rpcRequest('status');
       addLog('success', `[Raw] status → ${prettyjson(result)}`);
     } catch (e) {
-      addLog('error', `[Raw] status failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[Raw] status failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -1335,7 +2000,7 @@ function RawTab({ extensionDetected, addLog }: TabProps) {
       const result = await rpcRequest('getActiveNetwork');
       addLog('success', `[Raw] getActiveNetwork → ${prettyjson(result)}`);
     } catch (e) {
-      addLog('error', `[Raw] getActiveNetwork failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[Raw] getActiveNetwork failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -1349,7 +2014,7 @@ function RawTab({ extensionDetected, addLog }: TabProps) {
       addLog('success', `[Raw] listAccounts → ${prettyjson(result)}`);
       setRawAccounts(result);
     } catch (e) {
-      addLog('error', `[Raw] listAccounts failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[Raw] listAccounts failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -1362,7 +2027,7 @@ function RawTab({ extensionDetected, addLog }: TabProps) {
       const result = await rpcRequest<{ partyId: string; primary: boolean }>('getPrimaryAccount');
       addLog('success', `[Raw] getPrimaryAccount → ${prettyjson(result)}`);
     } catch (e) {
-      addLog('error', `[Raw] getPrimaryAccount failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[Raw] getPrimaryAccount failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }
@@ -1377,7 +2042,7 @@ function RawTab({ extensionDetected, addLog }: TabProps) {
       addLog('success', `[Raw] signMessage → ${result}`);
       setSignature(result);
     } catch (e) {
-      addLog('error', `[Raw] signMessage failed: ${e instanceof Error ? e.message : String(e)}`);
+      addLog('error', `[Raw] signMessage failed: ${formatErr(e)}`);
     } finally {
       setLoading(null);
     }

@@ -313,6 +313,91 @@ pre {
   font-size: 0.78rem;
 }
 
+/* Wallet balance */
+.balance-result {
+  margin-top: 12px;
+  padding: 12px 14px;
+  background: #12141c;
+  border: 1px solid #2a2d3a;
+  border-radius: 8px;
+}
+
+.balance-total {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px dashed #2a2d3a;
+}
+
+.balance-total-label {
+  font-size: 0.78rem;
+  color: #888;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.balance-total-value {
+  font-size: 1.35rem;
+  font-weight: 600;
+  color: #22c55e;
+  font-variant-numeric: tabular-nums;
+}
+
+.balance-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+}
+
+.balance-row-meta {
+  font-size: 0.78rem;
+  opacity: 0.75;
+}
+
+.balance-label {
+  color: #888;
+  min-width: 130px;
+}
+
+.balance-breakdown {
+  margin-top: 10px;
+  font-size: 0.78rem;
+}
+
+.balance-breakdown summary {
+  cursor: pointer;
+  color: #aaa;
+  padding: 4px 0;
+}
+
+.balance-breakdown summary:hover {
+  color: #ddd;
+}
+
+.balance-breakdown ul {
+  list-style: none;
+  margin: 6px 0 0 0;
+  padding: 0;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.balance-breakdown li {
+  padding: 2px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #ccc;
+}
+
+.balance-empty {
+  margin-top: 8px;
+  color: #888;
+}
+
+
 /* Badges */
 .badge {
   font-size: 0.65rem;

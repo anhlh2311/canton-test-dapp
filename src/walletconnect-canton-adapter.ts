@@ -106,10 +106,45 @@ export class CantonWcAdapter {
       .getAll()
       .find((s) => s.namespaces?.canton !== undefined);
     if (!cantonSession) return null;
+    const chainId = this.deriveChainId(cantonSession);
+    if (!chainId) {
+      // Stored session has neither chains nor parseable accounts under the
+      // `canton` namespace — we can't route any RPC through it. Discard so a
+      // fresh connect runs, and clear the stale entry from WC storage to
+      // avoid hitting this every reload.
+      try {
+        await client.disconnect({
+          topic: cantonSession.topic,
+          reason: { code: 6000, message: 'Stale session (no usable chain)' },
+        });
+      } catch {
+        /* ignore */
+      }
+      return null;
+    }
     this.session = cantonSession;
-    this.chainId = cantonSession.namespaces.canton?.chains?.[0] ?? null;
+    this.chainId = chainId;
     this.setupSessionEvents();
     return this;
+  }
+
+  /**
+   * Resolve a chainId to use for `signClient.request()` from an approved
+   * Canton WC session. Prefers `namespaces.canton.chains[0]`; falls back to
+   * the namespace component of `namespaces.canton.accounts[0]` (CAIP-10:
+   * `<ns>:<chainId>:<addr>`) — some wallets approve with chains=[] but valid
+   * accounts.
+   */
+  private deriveChainId(session: SessionTypes.Struct): string | null {
+    const cantonNs = session.namespaces.canton;
+    const chains = cantonNs?.chains ?? [];
+    if (chains.length > 0) return chains[0];
+    const accounts = cantonNs?.accounts ?? [];
+    for (const a of accounts) {
+      const parts = a.split(':');
+      if (parts.length >= 2) return `${parts[0]}:${parts[1]}`;
+    }
+    return null;
   }
 
   // ── Provider<DappRpcTypes> ──────────────────────────────────────
@@ -184,6 +219,30 @@ export class CantonWcAdapter {
       this.listeners[event] = this.listeners[event].filter((l) => l !== listenerToRemove);
     }
     return this;
+  }
+
+  // ── Public escape hatch ──────────────────────────────────────────
+
+  /**
+   * Send an arbitrary WC method to the wallet, bypassing the CIP-0103
+   * `canton_` prefix that {@link wcRequest} adds. Use this to probe for
+   * wallet-specific extension methods (e.g. `canton_getBalance`) that aren't
+   * part of the standard CANTON_WC_METHODS list. The exact method string you
+   * pass is what's sent on the wire — include any `canton_` / `splice_` /
+   * `wallet_` prefix yourself.
+   *
+   * Errors propagate verbatim from `signClient.request`, so callers can probe
+   * a list of candidates and pick whichever doesn't throw.
+   */
+  async rawRequest(method: string, params?: unknown): Promise<unknown> {
+    if (!this.signClient || !this.session || !this.chainId) {
+      throw new Error('WalletConnect session not established');
+    }
+    return this.signClient.request({
+      topic: this.session.topic,
+      chainId: this.chainId,
+      request: { method, params: params ?? {} },
+    });
   }
 
   // ── Internals ────────────────────────────────────────────────────
@@ -271,35 +330,28 @@ export class CantonWcAdapter {
       },
     });
     if (uri) this.onUri?.(uri);
-    this.session = await approval();
+    const session = await approval();
     // eslint-disable-next-line no-console
-    console.log('[CantonWcAdapter] Approved session.namespaces:', JSON.stringify(this.session.namespaces, null, 2));
-    const cantonNs = this.session.namespaces.canton;
-    const approvedChains = cantonNs?.chains ?? [];
-    if (approvedChains.length === 0) {
-      // Fallback: derive chains from approved accounts (CAIP-10: `<ns>:<chainId>:<addr>`)
-      const accounts = cantonNs?.accounts ?? [];
-      const derived = Array.from(
-        new Set(
-          accounts
-            .map((a) => {
-              const parts = a.split(':');
-              return parts.length >= 2 ? `${parts[0]}:${parts[1]}` : null;
-            })
-            .filter((x): x is string => x !== null),
-        ),
-      );
-      if (derived.length === 0) {
-        throw new Error(
-          `Wallet approved canton namespace but provided neither chains nor accounts. Approved namespaces: ${Object.keys(
-            this.session.namespaces,
-          ).join(', ') || '(none)'}`,
-        );
+    console.log('[CantonWcAdapter] Approved session.namespaces:', JSON.stringify(session.namespaces, null, 2));
+    const chainId = this.deriveChainId(session);
+    if (!chainId) {
+      // Wallet approved but with neither chains nor parseable accounts under
+      // `canton`. Tear down the session — it's unusable for routing requests.
+      const namespaceKeys = Object.keys(session.namespaces ?? {}).join(', ') || '(none)';
+      try {
+        await client.disconnect({
+          topic: session.topic,
+          reason: { code: 6000, message: 'No usable canton chain in approved session' },
+        });
+      } catch {
+        /* ignore */
       }
-      this.chainId = derived[0];
-    } else {
-      this.chainId = approvedChains[0];
+      throw new Error(
+        `Wallet approved a session but its 'canton' namespace had no chains or parseable accounts. Approved namespaces: ${namespaceKeys}`,
+      );
     }
+    this.session = session;
+    this.chainId = chainId;
     this.setupSessionEvents();
   }
 }
