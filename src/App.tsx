@@ -4,6 +4,8 @@ import './App.css';
 import * as sdk from '@canton-network/dapp-sdk';
 import type { ProviderAdapter } from '@canton-network/core-wallet-discovery';
 import { CantonWcAdapter } from './walletconnect-canton-adapter';
+import { RockyPage } from './RockyPage';
+import { ConnectionModeNav } from './ConnectionModeNav';
 
 const WC_PROJECT_ID = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string | undefined;
 const WC_PROPOSED_CHAINS = ((import.meta.env.VITE_CANTON_CHAIN_ID as string | undefined) ?? 'canton:devnet')
@@ -218,7 +220,7 @@ let msgId = 0;
 // ============================================================
 // Main App
 // ============================================================
-type TabId = 'accounts' | 'sign' | 'ledger-query' | 'ledger-submit' | 'events' | 'messages' | 'raw';
+type TabId = 'accounts' | 'sign' | 'ledger-query' | 'ledger-submit' | 'events' | 'messages';
 
 type SignMode = 'sdk' | 'raw';
 
@@ -366,7 +368,7 @@ function parseBytesAuto(input: string, label = 'input'): { bytes: Uint8Array; fo
   throw new Error(`${label}: does not look like hex or base64`);
 }
 
-function App() {
+function CantonDapp({ onOpenRocky }: { onOpenRocky: () => void }) {
   const [activeTab, setActiveTab] = useState<TabId>('accounts');
   const [extensionDetected, setExtensionDetected] = useState<boolean | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -432,12 +434,17 @@ function App() {
   // log the fields that actually changed (network switches vs. lock vs. plain
   // refresh look identical otherwise).
   const prevStatusRef = useRef<sdk.dappAPI.StatusEvent | undefined>(undefined);
-  const primaryParty = accounts.find((a) => a.primary)?.partyId;
+  // Some wallets (e.g. Ginkgo on devnet with a single account) return accounts
+  // from listAccounts without a `primary` flag, so fall back to the first
+  // account. Otherwise primaryParty/primaryPubKey would be undefined even
+  // though a usable account is connected.
+  const primaryAccount = accounts.find((a) => a.primary) ?? accounts[0];
+  const primaryParty = primaryAccount?.partyId;
   // Canonical source of the connected user's Ed25519 public key. Sourced from
   // `Wallet.publicKey` on listAccounts / accountsChanged, NOT from the
   // signMessage response — CIP-0103 mandates signMessage returns just
   // { signature }. Cleared on disconnect because `accounts` is set to [].
-  const primaryPubKey = accounts.find((a) => a.primary)?.publicKey;
+  const primaryPubKey = primaryAccount?.publicKey;
 
   const addLog = useCallback((type: LogEntry['type'], message: string) => {
     const id = ++logId;
@@ -584,19 +591,6 @@ function App() {
   }, [isConnected, wcUri]);
 
   // -- Connection handlers --
-
-  async function handleRawConnect() {
-    setLoading('raw-connect');
-    addLog('info', '[Raw RPC] Direct postMessage connect...');
-    try {
-      const result = await rpcRequest<{ isConnected: boolean; reason: string }>('connect');
-      addLog('success', `[Raw RPC] connect → ${prettyjson(result)}`);
-    } catch (e) {
-      addLog('error', `[Raw RPC] connect failed: ${formatErr(e)}`);
-    } finally {
-      setLoading(null);
-    }
-  }
 
   async function handleConnect() {
     setLoading('connect');
@@ -1369,13 +1363,14 @@ function App() {
     { id: 'ledger-submit', label: 'Ledger Submit' },
     { id: 'events', label: `Events (${events.length})` },
     { id: 'messages', label: `Messages (${windowMessages.length})` },
-    { id: 'raw', label: 'Raw RPC' },
   ];
 
   return (
     <div className="app">
       <h1>Canton Test dApp</h1>
       <p className="subtitle">CIP-0103 Prototype — Wallet connection, ledger query, and transaction signing</p>
+
+      <ConnectionModeNav active="standard" onStandard={() => {}} onRocky={onOpenRocky} />
 
       {/* Extension Detection */}
       <section className="card">
@@ -1419,9 +1414,6 @@ function App() {
           >
             {loading === 'connect-wc' ? 'Connecting...' : 'Connect WalletConnect'}
           </button>
-          <button onClick={handleRawConnect} disabled={!!loading || !extensionDetected}>
-            {loading === 'raw-connect' ? 'Connecting...' : 'Connect (Raw RPC)'}
-          </button>
           <button onClick={handleDisconnect} disabled={!!loading || !isConnected}>
             {loading === 'disconnect' ? '...' : 'Disconnect'}
           </button>
@@ -1433,7 +1425,6 @@ function App() {
           <div><b>Connect (Picker)</b> — Opens the SDK wallet picker with all available wallets.</div>
           <div><b>Connect Extension</b> — Opens the SDK wallet picker with extension-only options.</div>
           <div><b>Connect WalletConnect</b> — CIP-0103 over WalletConnect v2. Wallet picks the network. Scan the QR with a Canton mobile wallet.</div>
-          <div><b>Connect (Raw RPC)</b> — Direct CIP-0103 JSON-RPC via postMessage (extension only, bypasses SDK).</div>
         </div>
 
         {statusEvent && (
@@ -1774,10 +1765,6 @@ function App() {
         </section>
       )}
 
-      {activeTab === 'raw' && (
-        <RawTab extensionDetected={extensionDetected} addLog={addLog} />
-      )}
-
       {/* WalletConnect QR Modal */}
       {wcUri && (
         <div className="wc-modal-overlay" onClick={() => setWcUri(null)}>
@@ -1953,155 +1940,30 @@ function AccountsTab({
 }
 
 // ============================================================
-// Raw PostMessage Tab
+// Router — switches between the standard CIP-0103 dApp and the
+// dedicated Rocky Wallet page (/rocky/). Minimal History API based
+// router to avoid pulling in a routing dependency.
 // ============================================================
-interface TabProps {
-  extensionDetected: boolean | null;
-  addLog: (type: LogEntry['type'], message: string) => void;
-}
-
-function RawTab({ extensionDetected, addLog }: TabProps) {
-  const [loading, setLoading] = useState<string | null>(null);
-  const [rawAccounts, setRawAccounts] = useState<{ partyId: string; primary: boolean }[]>([]);
-  const [signature, setSignature] = useState<string | null>(null);
-
-  async function handleDisconnect() {
-    setLoading('disconnect');
-    addLog('info', '[Raw] disconnect()...');
-    try {
-      await rpcRequest('disconnect');
-      addLog('success', '[Raw] disconnect → OK');
-      setRawAccounts([]);
-      setSignature(null);
-    } catch (e) {
-      addLog('error', `[Raw] disconnect failed: ${formatErr(e)}`);
-    } finally {
-      setLoading(null);
-    }
-  }
-
-  async function handleStatus() {
-    setLoading('status');
-    addLog('info', '[Raw] status()...');
-    try {
-      const result = await rpcRequest('status');
-      addLog('success', `[Raw] status → ${prettyjson(result)}`);
-    } catch (e) {
-      addLog('error', `[Raw] status failed: ${formatErr(e)}`);
-    } finally {
-      setLoading(null);
-    }
-  }
-
-  async function handleGetActiveNetwork() {
-    setLoading('getActiveNetwork');
-    addLog('info', '[Raw] getActiveNetwork()...');
-    try {
-      const result = await rpcRequest('getActiveNetwork');
-      addLog('success', `[Raw] getActiveNetwork → ${prettyjson(result)}`);
-    } catch (e) {
-      addLog('error', `[Raw] getActiveNetwork failed: ${formatErr(e)}`);
-    } finally {
-      setLoading(null);
-    }
-  }
-
-  async function handleListAccounts() {
-    setLoading('listAccounts');
-    addLog('info', '[Raw] listAccounts()...');
-    try {
-      const result = await rpcRequest<{ partyId: string; primary: boolean }[]>('listAccounts');
-      addLog('success', `[Raw] listAccounts → ${prettyjson(result)}`);
-      setRawAccounts(result);
-    } catch (e) {
-      addLog('error', `[Raw] listAccounts failed: ${formatErr(e)}`);
-    } finally {
-      setLoading(null);
-    }
-  }
-
-  async function handleGetPrimaryAccount() {
-    setLoading('getPrimaryAccount');
-    addLog('info', '[Raw] getPrimaryAccount()...');
-    try {
-      const result = await rpcRequest<{ partyId: string; primary: boolean }>('getPrimaryAccount');
-      addLog('success', `[Raw] getPrimaryAccount → ${prettyjson(result)}`);
-    } catch (e) {
-      addLog('error', `[Raw] getPrimaryAccount failed: ${formatErr(e)}`);
-    } finally {
-      setLoading(null);
-    }
-  }
-
-  async function handleSignMessage() {
-    setLoading('signMessage');
-    const testMessage = 'Hello from Canton Test dApp!';
-    addLog('info', `[Raw] signMessage("${testMessage}")...`);
-    try {
-      const result = await rpcRequest<string>('signMessage', { message: testMessage });
-      addLog('success', `[Raw] signMessage → ${result}`);
-      setSignature(result);
-    } catch (e) {
-      addLog('error', `[Raw] signMessage failed: ${formatErr(e)}`);
-    } finally {
-      setLoading(null);
-    }
-  }
-
-  return (
-    <>
-      <section className="card">
-        <h2>Raw RPC Testing</h2>
-        <p className="hint">Raw CIP-0103 JSON-RPC calls via postMessage (use "Connect (Raw RPC)" above to connect first)</p>
-        <div className="button-row">
-          <button onClick={handleDisconnect} disabled={!!loading || !extensionDetected}>
-            {loading === 'disconnect' ? '...' : 'Disconnect'}
-          </button>
-          <button onClick={handleStatus} disabled={!!loading || !extensionDetected}>
-            {loading === 'status' ? '...' : 'Status'}
-          </button>
-          <button onClick={handleGetActiveNetwork} disabled={!!loading || !extensionDetected}>
-            {loading === 'getActiveNetwork' ? '...' : 'Get Network'}
-          </button>
-        </div>
-      </section>
-
-      <section className="card">
-        <h2>Raw Accounts</h2>
-        <div className="button-row">
-          <button onClick={handleListAccounts} disabled={!!loading || !extensionDetected}>
-            {loading === 'listAccounts' ? '...' : 'List Accounts'}
-          </button>
-          <button onClick={handleGetPrimaryAccount} disabled={!!loading || !extensionDetected}>
-            {loading === 'getPrimaryAccount' ? '...' : 'Get Primary'}
-          </button>
-        </div>
-        {rawAccounts.length > 0 && (
-          <div className="result-box">
-            {rawAccounts.map((a) => (
-              <div key={a.partyId}>
-                <strong>{a.primary ? '(primary) ' : ''}</strong>
-                <code>{a.partyId}</code>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section className="card">
-        <h2>Raw Sign Message</h2>
-        <button onClick={handleSignMessage} disabled={!!loading || !extensionDetected}>
-          {loading === 'signMessage' ? 'Signing...' : 'Sign Test Message'}
-        </button>
-        {signature && (
-          <div className="result-box">
-            <strong>Signature:</strong>
-            <code className="wrap">{signature}</code>
-          </div>
-        )}
-      </section>
-    </>
+function App() {
+  const [path, setPath] = useState(() =>
+    typeof window !== 'undefined' ? window.location.pathname : '/',
   );
+
+  useEffect(() => {
+    const onPop = () => setPath(window.location.pathname);
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  const navigate = useCallback((to: string) => {
+    if (window.location.pathname !== to) window.history.pushState({}, '', to);
+    setPath(to);
+  }, []);
+
+  if (/^\/rocky(\/|$)/.test(path)) {
+    return <RockyPage onExit={() => navigate('/')} />;
+  }
+  return <CantonDapp onOpenRocky={() => navigate('/rocky/')} />;
 }
 
 export default App;
