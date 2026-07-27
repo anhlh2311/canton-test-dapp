@@ -5,6 +5,7 @@ import * as sdk from '@canton-network/dapp-sdk';
 import type { ProviderAdapter } from '@canton-network/core-wallet-discovery';
 import { CantonWcAdapter } from './walletconnect-canton-adapter';
 import { RockyPage } from './RockyPage';
+import { PartyLayerPage } from './PartyLayerPage';
 import { ConnectionModeNav } from './ConnectionModeNav';
 
 const WC_PROJECT_ID = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string | undefined;
@@ -368,7 +369,13 @@ function parseBytesAuto(input: string, label = 'input'): { bytes: Uint8Array; fo
   throw new Error(`${label}: does not look like hex or base64`);
 }
 
-function CantonDapp({ onOpenRocky }: { onOpenRocky: () => void }) {
+function CantonDapp({
+  onOpenRocky,
+  onOpenPartyLayer,
+}: {
+  onOpenRocky: () => void;
+  onOpenPartyLayer: () => void;
+}) {
   const [activeTab, setActiveTab] = useState<TabId>('accounts');
   const [extensionDetected, setExtensionDetected] = useState<boolean | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -1370,7 +1377,12 @@ function CantonDapp({ onOpenRocky }: { onOpenRocky: () => void }) {
       <h1>Canton Test dApp</h1>
       <p className="subtitle">CIP-0103 Prototype — Wallet connection, ledger query, and transaction signing</p>
 
-      <ConnectionModeNav active="standard" onStandard={() => {}} onRocky={onOpenRocky} />
+      <ConnectionModeNav
+        active="standard"
+        onStandard={() => {}}
+        onRocky={onOpenRocky}
+        onPartyLayer={onOpenPartyLayer}
+      />
 
       {/* Extension Detection */}
       <section className="card">
@@ -1961,9 +1973,27 @@ function App() {
   }, []);
 
   if (/^\/rocky(\/|$)/.test(path)) {
-    return <RockyPage onExit={() => navigate('/')} />;
+    return (
+      <RockyPage
+        onExit={() => navigate('/')}
+        onOpenPartyLayer={() => navigate('/partylayer/')}
+      />
+    );
   }
-  return <CantonDapp onOpenRocky={() => navigate('/rocky/')} />;
+  if (/^\/partylayer(\/|$)/i.test(path)) {
+    return (
+      <PartyLayerPage
+        onExit={() => navigate('/')}
+        onOpenRocky={() => navigate('/rocky/')}
+      />
+    );
+  }
+  return (
+    <CantonDapp
+      onOpenRocky={() => navigate('/rocky/')}
+      onOpenPartyLayer={() => navigate('/partylayer/')}
+    />
+  );
 }
 
 export default App;

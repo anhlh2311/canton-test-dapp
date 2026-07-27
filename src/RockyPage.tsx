@@ -31,7 +31,13 @@ function pickUsd(t?: RockyTokenBalance): string | undefined {
   return undefined;
 }
 
-export function RockyPage({ onExit }: { onExit: () => void }) {
+export function RockyPage({
+  onExit,
+  onOpenPartyLayer,
+}: {
+  onExit: () => void;
+  onOpenPartyLayer: () => void;
+}) {
   const rocky = useRockyWallet('Canton Test dApp');
   const connected = rocky.status === 'connected';
 
@@ -95,7 +101,12 @@ export function RockyPage({ onExit }: { onExit: () => void }) {
         Rocky Wallet integration — talks to the extension injected at <code>window.rockyWallet</code>
       </p>
 
-      <ConnectionModeNav active="rocky" onStandard={onExit} onRocky={() => {}} />
+      <ConnectionModeNav
+        active="rocky"
+        onStandard={onExit}
+        onRocky={() => {}}
+        onPartyLayer={onOpenPartyLayer}
+      />
 
       {/* Connection */}
       <section className="card">

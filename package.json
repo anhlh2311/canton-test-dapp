@@ -11,6 +11,9 @@
   "dependencies": {
     "@canton-network/dapp-sdk": "^1.1.0",
     "@noble/curves": "^2.2.0",
+    "@partylayer/react": "^2.1.0",
+    "@partylayer/sdk": "^0.15.0",
+    "@tanstack/react-query": "^5.101.4",
     "@walletconnect/sign-client": "^2.23.9",
     "@walletconnect/types": "^2.23.9",
     "qrcode": "^1.5.4",

@@ -437,6 +437,55 @@ pre {
   cursor: default;
 }
 
+.partylayer-connect-row {
+  align-items: center;
+}
+
+.partylayer-wallet-list {
+  margin: 8px 0 0;
+  padding-left: 1.2rem;
+  font-size: 0.85rem;
+  line-height: 1.55;
+  color: #ccc;
+}
+
+.partylayer-wallet-list code {
+  color: #93c5fd;
+}
+
+.partylayer-network-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 6px;
+  flex-wrap: wrap;
+}
+
+.partylayer-tx-toast {
+  margin-top: 12px;
+  border-left: 3px solid #6b7280;
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: #141414;
+}
+
+.partylayer-tx-toast--pending {
+  border-left-color: #f59e0b;
+}
+
+.partylayer-tx-toast--success {
+  border-left-color: #22c55e;
+}
+
+.partylayer-tx-toast--error {
+  border-left-color: #ef4444;
+}
+
+.partylayer-tx-toast-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
 .balance-breakdown {
   margin-top: 10px;
   font-size: 0.78rem;

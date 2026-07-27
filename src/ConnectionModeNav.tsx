@@ -1,13 +1,15 @@
-export type ConnectionMode = 'standard' | 'rocky';
+export type ConnectionMode = 'standard' | 'rocky' | 'partylayer';
 
 export function ConnectionModeNav({
   active,
   onStandard,
   onRocky,
+  onPartyLayer,
 }: {
   active: ConnectionMode;
   onStandard: () => void;
   onRocky: () => void;
+  onPartyLayer: () => void;
 }) {
   return (
     <div className="conn-mode-nav">
@@ -25,6 +27,13 @@ export function ConnectionModeNav({
         disabled={active === 'rocky'}
       >
         Rocky Wallet
+      </button>
+      <button
+        className={`conn-mode-btn ${active === 'partylayer' ? 'active' : ''}`}
+        onClick={onPartyLayer}
+        disabled={active === 'partylayer'}
+      >
+        PartyLayer
       </button>
     </div>
   );
