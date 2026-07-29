@@ -815,6 +815,11 @@
   resolved "https://registry.npmjs.org/@protobuf-ts/runtime/-/runtime-2.11.1.tgz"
   integrity sha512-KuDaT1IfHkugM2pyz+FwiY80ejWrkH1pAtOBOZFuR6SXEFTsnb/jiQWQ1rCIrcKx2BtyxnxW6BWwsVSA/Ie+WQ==
 
+"@rocky-wallet/dapp-sdk@1.0.2":
+  version "1.0.2"
+  resolved "https://registry.yarnpkg.com/@rocky-wallet/dapp-sdk/-/dapp-sdk-1.0.2.tgz#67076c0032692771bb15ebc89c0e759e864aa902"
+  integrity sha512-ZB2WA3aFRHZ7sG0SGU5cgFLTj2s3wG+HaTFp7hREmzVA+6zBYeM5DwpzNa68UOURHOOl1DK6FCwTEIlHCUiwkA==
+
 "@rolldown/pluginutils@1.0.0-beta.27":
   version "1.0.0-beta.27"
   resolved "https://registry.npmjs.org/@rolldown/pluginutils/-/pluginutils-1.0.0-beta.27.tgz"

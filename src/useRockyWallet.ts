@@ -1,16 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  createRockyWalletClient,
+  MINIMAL_CAPABLE_VERSION,
   RockyWalletError,
-  ROCKY_ASSET_SYMBOLS,
+  rockyWallet,
   type RockyAccount,
-  type RockyAssetSymbol,
+  type RockyAssetDescriptor,
   type RockyTokenBalance,
-} from './lib/rockyWalletSdk/index.js';
+} from '@rocky-wallet/dapp-sdk';
+import {
+  assertValidRockyTransfer,
+  buildRockyTransferOptions,
+  type RockyAssetOption,
+} from './rockyAssets.js';
 
 export type RockyStatus =
   | 'idle'
   | 'unavailable'
+  | 'incompatible'
   | 'available'
   | 'connecting'
   | 'connected'
@@ -19,18 +25,20 @@ export type RockyStatus =
 export interface UseRockyWallet {
   status: RockyStatus;
   account: RockyAccount | undefined;
+  catalog: RockyAssetDescriptor[];
+  catalogSupported: boolean;
   balances: RockyTokenBalance[];
   balancesLoading: boolean;
   version: string | undefined;
   error: string | undefined;
-  assets: readonly RockyAssetSymbol[];
+  transferAssets: RockyAssetOption[];
   connect: () => Promise<void>;
   disconnect: () => Promise<void>;
   refreshBalances: () => Promise<void>;
   transfer: (
     to: string,
     amount: string,
-    asset: RockyAssetSymbol,
+    asset: RockyAssetOption,
     memo?: string,
   ) => Promise<unknown>;
   signLogin: (challenge: string) => Promise<string | undefined>;
@@ -39,55 +47,67 @@ export interface UseRockyWallet {
 export function useRockyWallet(appName = 'Canton Test dApp'): UseRockyWallet {
   const [status, setStatus] = useState<RockyStatus>('idle');
   const [account, setAccount] = useState<RockyAccount | undefined>();
+  const [catalog, setCatalog] = useState<RockyAssetDescriptor[]>([]);
+  const [catalogSupported, setCatalogSupported] = useState(true);
   const [balances, setBalances] = useState<RockyTokenBalance[]>([]);
   const [balancesLoading, setBalancesLoading] = useState(false);
   const [version, setVersion] = useState<string>();
   const [error, setError] = useState<string>();
 
-  // The client captures `window` at construction, so build it lazily inside the
-  // component (Vite SPA — no SSR — but keep the guard explicit) and never use
-  // the module-level `rocky` singleton (audit finding M4).
-  const client = useMemo(
-    () => (typeof window !== 'undefined' ? createRockyWalletClient() : null),
-    [],
+  const transferAssets = useMemo(
+    () => buildRockyTransferOptions(catalog, catalogSupported),
+    [catalog, catalogSupported],
   );
-  const initedRef = useRef(false);
 
-  const init = useCallback(() => {
-    if (!client || initedRef.current) return;
-    client.init({
-      appName,
-      onAccept: (p) => setVersion(String(p.version ?? '')),
-      onReject: () => setStatus('available'),
-    });
-    initedRef.current = true;
-  }, [client, appName]);
+  const checkAvailability = useCallback(async (): Promise<boolean> => {
+    try {
+      const availability = await rockyWallet.checkExtensionAvailability({
+        timeoutMs: 1500,
+      });
+      setVersion(availability.currentVersion);
 
-  // Passive, non-invasive availability check on mount. We deliberately do NOT
-  // open the provider, register listeners, or auto-connect here — all access to
-  // window.rockyWallet is deferred until the user explicitly clicks connect().
-  // This keeps Rocky completely inert for users of other wallets (e.g. Ginkgo /
-  // Splice) so it can never touch their connection or signing flows.
-  useEffect(() => {
-    if (!client) {
+      if (availability.status !== 'installed') {
+        setStatus('unavailable');
+        setError('Rocky Wallet Extension is not installed.');
+        return false;
+      }
+      if (!availability.isExtensionCapableByVersion) {
+        setStatus('incompatible');
+        setError(
+          `Rocky Wallet ${MINIMAL_CAPABLE_VERSION} or later is required; found ${
+            availability.currentVersion ?? 'an unknown version'
+          }.`,
+        );
+        return false;
+      }
+
+      setStatus((current) => (current === 'connected' ? current : 'available'));
+      setError(undefined);
+      return true;
+    } catch (e) {
       setStatus('unavailable');
-      return;
+      setError(describeRockyError(e));
+      return false;
     }
-    if (typeof window !== 'undefined' && window.rockyWallet) {
-      setStatus('available');
-    }
-  }, [client]);
+  }, []);
+
+  // This hook only mounts on /rocky/. Availability detection waits for Rocky's
+  // injection-ready event but does not connect, unlock, or touch other wallets.
+  useEffect(() => {
+    void checkAvailability();
+  }, [checkAvailability]);
 
   const connect = useCallback(async () => {
-    if (!client) return;
-    init(); // lazy: first provider access happens here, on explicit user action
+    if (!(await checkAvailability())) return;
     setStatus('connecting');
     setError(undefined);
     try {
-      // Pass only known-safe keys — never spread untrusted data that could
-      // override `target` and promote a remote connection (audit H2).
-      const res = await client.connect({ target: 'local', timeoutMs: 3000 });
-      if (res.isConnected) {
+      const res = await rockyWallet.connect({
+        name: appName,
+        target: 'local',
+        timeoutMs: 3000,
+      });
+      if (res.isConnected && res.account) {
         setAccount(res.account);
         setStatus('connected');
       } else {
@@ -98,48 +118,69 @@ export function useRockyWallet(appName = 'Canton Test dApp'): UseRockyWallet {
       setStatus('error');
       setError(describeRockyError(e));
     }
-  }, [client, init]);
+  }, [appName, checkAvailability]);
 
   const disconnect = useCallback(async () => {
-    if (!client) return;
     try {
-      await client.disconnect();
+      await rockyWallet.disconnect();
     } finally {
       setAccount(undefined);
+      setCatalog([]);
       setBalances([]);
       setError(undefined);
       setStatus('available');
     }
-  }, [client]);
+  }, []);
 
   const refreshBalances = useCallback(async () => {
-    if (!client) return;
+    if (!account) return;
     setBalancesLoading(true);
     try {
-      const res = await client.wallet.getCoinsBalance();
-      setBalances(res.tokens ?? res.items ?? []);
+      const [balanceResponse, catalogResult] = await Promise.all([
+        rockyWallet.getCoinsBalance({ party: account.partyId }),
+        rockyWallet
+          .getAssetCatalog()
+          .then((assets) => ({ assets, supported: true }))
+          .catch((catalogError: unknown) => {
+            if (catalogError instanceof RockyWalletError && catalogError.code === 4200) {
+              return { assets: [], supported: false };
+            }
+            throw catalogError;
+          }),
+      ]);
+      setBalances(balanceResponse.tokens ?? balanceResponse.items ?? []);
+      setCatalog(catalogResult.assets);
+      setCatalogSupported(catalogResult.supported);
+      setError(undefined);
     } catch (e) {
       setError(describeRockyError(e));
     } finally {
       setBalancesLoading(false);
     }
-  }, [client]);
+  }, [account]);
 
   const transfer = useCallback(
-    async (to: string, amount: string, asset: RockyAssetSymbol, memo?: string) => {
-      if (!client) throw new Error('Rocky Wallet unavailable');
-      assertValidTransfer(to, amount, asset);
-      return client.wallet.transfer(to, amount, asset, { memo });
+    async (to: string, amount: string, asset: RockyAssetOption, memo?: string) => {
+      assertValidRockyTransfer(to, amount, asset);
+      if (asset.assetId) {
+        return rockyWallet.transfer({
+          asset_id: asset.assetId,
+          symbol: asset.symbol,
+          to,
+          amount,
+          memo,
+        });
+      }
+      return rockyWallet.transfer(to, amount, asset.symbol, { memo });
     },
-    [client],
+    [],
   );
 
   const signLogin = useCallback(
     async (challenge: string) => {
-      if (!client) throw new Error('Rocky Wallet unavailable');
-      return client.signLoginChallenge(challenge, { app: appName });
+      return rockyWallet.signLoginChallenge(challenge, { app: appName });
     },
-    [client, appName],
+    [appName],
   );
 
   // Auto-fetch balances once connected and whenever the active party changes.
@@ -147,31 +188,16 @@ export function useRockyWallet(appName = 'Canton Test dApp'): UseRockyWallet {
     if (status === 'connected') void refreshBalances();
   }, [status, account?.partyId, refreshBalances]);
 
-  // Keep UI in sync with wallet-driven changes (account switch, lock/unlock).
-  // Only subscribe once the user has connected Rocky, so no window listeners
-  // are registered for users who never opt into Rocky.
-  useEffect(() => {
-    if (!client || status !== 'connected') return;
-    const offs = [
-      client.sdk.onAccountsChanged((a) => {
-        setAccount(a);
-        setStatus(a ? 'connected' : 'available');
-      }),
-      client.sdk.onConnectionStatusChanged((s) =>
-        setStatus(s?.isConnected ? 'connected' : 'available'),
-      ),
-    ];
-    return () => offs.forEach((off) => off());
-  }, [client, status]);
-
   return {
     status,
     account,
+    catalog,
+    catalogSupported,
     balances,
     balancesLoading,
     version,
     error,
-    assets: ROCKY_ASSET_SYMBOLS,
+    transferAssets,
     connect,
     disconnect,
     refreshBalances,
@@ -184,11 +210,11 @@ export function describeRockyError(e: unknown): string {
   if (e instanceof RockyWalletError) {
     switch (e.code) {
       case 4001:
-        return 'Connection rejected in the wallet.';
+        return 'Wallet request rejected or confirmation closed.';
       case 4200:
         return 'Not supported by this wallet version.';
       case 4900:
-        return 'Rocky Wallet not installed or locked.';
+        return 'Rocky Wallet is unavailable, locked, or disconnected.';
       case -32602:
         return `Invalid request: ${e.message}`;
       default:
@@ -196,15 +222,4 @@ export function describeRockyError(e: unknown): string {
     }
   }
   return e instanceof Error ? e.message : String(e);
-}
-
-// Guards audit findings M1 (unknown instrument silently becomes CC) and
-// L4 (no amount validation) before anything reaches the extension.
-export function assertValidTransfer(to: string, amount: string, asset: RockyAssetSymbol): void {
-  if (!to?.trim()) throw new Error('Recipient party is required.');
-  if (!(ROCKY_ASSET_SYMBOLS as readonly string[]).includes(asset)) {
-    throw new Error(`Unknown asset "${asset}". Choose one of ${ROCKY_ASSET_SYMBOLS.join(', ')}.`);
-  }
-  const n = Number(amount);
-  if (!Number.isFinite(n) || n <= 0) throw new Error('Amount must be a positive number.');
 }

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "test": "node --test src/rockyAssets.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -13,6 +14,7 @@
     "@noble/curves": "^2.2.0",
     "@partylayer/react": "^2.1.0",
     "@partylayer/sdk": "^0.15.0",
+    "@rocky-wallet/dapp-sdk": "1.0.2",
     "@tanstack/react-query": "^5.101.4",
     "@walletconnect/sign-client": "^2.23.9",
     "@walletconnect/types": "^2.23.9",

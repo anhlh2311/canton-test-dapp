@@ -1,12 +1,13 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import './App.css';
 import { useRockyWallet, type RockyStatus } from './useRockyWallet';
-import type { RockyAssetSymbol, RockyTokenBalance } from './lib/rockyWalletSdk/index.js';
+import { buildRockyAssetRows, type RockyAssetOption } from './rockyAssets.js';
 import { ConnectionModeNav } from './ConnectionModeNav';
 
 const STATUS_LABEL: Record<RockyStatus, string> = {
   idle: 'not connected',
   unavailable: 'extension not found',
+  incompatible: 'extension update required',
   available: 'detected — not connected',
   connecting: 'connecting…',
   connected: 'connected',
@@ -15,20 +16,12 @@ const STATUS_LABEL: Record<RockyStatus, string> = {
 
 function statusDot(status: RockyStatus): 'green' | 'yellow' | 'red' {
   if (status === 'connected') return 'green';
-  if (status === 'unavailable' || status === 'error') return 'red';
+  if (status === 'unavailable' || status === 'incompatible' || status === 'error') return 'red';
   return 'yellow';
 }
 
-// The wallet's USD price field name varies across versions — probe common
-// variants so a rename doesn't silently drop the price from the UI.
-function pickUsd(t?: RockyTokenBalance): string | undefined {
-  if (!t) return undefined;
-  const rec = t as Record<string, unknown>;
-  for (const k of ['priceUsd', 'price_usd', 'usdPrice', 'price', 'usd', 'valueUsd', 'value_usd', 'value', 'fiatValue']) {
-    const v = rec[k];
-    if (v !== undefined && v !== null && String(v) !== '') return String(v);
-  }
-  return undefined;
+function assetOptionValue(asset: RockyAssetOption): string {
+  return asset.assetId ?? `legacy:${asset.symbol}`;
 }
 
 export function RockyPage({
@@ -43,7 +36,7 @@ export function RockyPage({
 
   const [txTo, setTxTo] = useState('');
   const [txAmount, setTxAmount] = useState('');
-  const [txAsset, setTxAsset] = useState<RockyAssetSymbol>(rocky.assets[0] ?? 'CC');
+  const [txAssetKey, setTxAssetKey] = useState('');
   const [txMemo, setTxMemo] = useState('');
   const [transferState, setTransferState] = useState<{ loading: boolean; result?: string; error?: string }>({
     loading: false,
@@ -58,18 +51,25 @@ export function RockyPage({
     void navigator.clipboard?.writeText(value);
   };
 
-  const upper = (s: unknown) => String(s).toUpperCase();
-  const balanceRows = [
-    ...rocky.assets.map((sym) => {
-      const found = rocky.balances.find((b) => upper(b.symbol) === upper(sym));
-      return { symbol: String(sym), amount: found?.amount ?? '0', usd: pickUsd(found) };
-    }),
-    ...rocky.balances
-      .filter((b) => !rocky.assets.some((sym) => upper(sym) === upper(b.symbol)))
-      .map((b) => ({ symbol: String(b.symbol), amount: b.amount ?? '0', usd: pickUsd(b) })),
-  ];
+  const balanceRows = useMemo(
+    () => buildRockyAssetRows(rocky.catalog, rocky.balances),
+    [rocky.catalog, rocky.balances],
+  );
+  const txAsset = rocky.transferAssets.find(
+    (asset) => assetOptionValue(asset) === txAssetKey,
+  );
+
+  useEffect(() => {
+    if (!txAsset && rocky.transferAssets[0]) {
+      setTxAssetKey(assetOptionValue(rocky.transferAssets[0]));
+    }
+  }, [rocky.transferAssets, txAsset]);
 
   async function handleTransfer() {
+    if (!txAsset) {
+      setTransferState({ loading: false, error: 'No sendable Rocky asset is available.' });
+      return;
+    }
     setTransferState({ loading: true });
     try {
       const res = await rocky.transfer(txTo.trim(), txAmount.trim(), txAsset, txMemo.trim() || undefined);
@@ -121,8 +121,18 @@ export function RockyPage({
         <div className="button-row">
           <button
             onClick={connected ? rocky.disconnect : rocky.connect}
-            disabled={rocky.status === 'connecting' || rocky.status === 'unavailable'}
-            title={rocky.status === 'unavailable' ? 'Rocky Wallet extension not found' : ''}
+            disabled={
+              rocky.status === 'connecting' ||
+              rocky.status === 'unavailable' ||
+              rocky.status === 'incompatible'
+            }
+            title={
+              rocky.status === 'unavailable'
+                ? 'Rocky Wallet extension not found'
+                : rocky.status === 'incompatible'
+                  ? 'Rocky Wallet 1.0.2 or later is required'
+                  : ''
+            }
           >
             {rocky.status === 'connecting' ? 'Connecting…' : connected ? 'Disconnect' : 'Connect Rocky'}
           </button>
@@ -201,7 +211,7 @@ export function RockyPage({
         <section className="card">
           <h2>Balances</h2>
           <p className="hint">
-            Multi-asset balances via Rocky <code>getCoinsBalance()</code> — CC, USDCx, CBTC.
+            Wallet balances are joined to the Rocky asset catalog by exact <code>asset_id</code>.
             Auto-refreshed on connect.
           </p>
           <div className="button-row">
@@ -211,18 +221,27 @@ export function RockyPage({
           </div>
           <div className="balance-result">
             {balanceRows.map((row) => (
-              <div key={row.symbol} className="balance-row">
-                <span className="balance-label">{row.symbol}</span>
+              <div key={row.key} className="balance-row">
+                <span className="balance-label">
+                  {row.label}
+                  {row.label !== row.symbol ? ` (${row.symbol})` : ''}
+                </span>
                 <span className="balance-total-value">
                   {row.amount}
                   {row.usd ? <span className="balance-usd"> ≈ ${row.usd}</span> : null}
                 </span>
               </div>
             ))}
-            {rocky.balances.length > 0 && (
+            {(rocky.balances.length > 0 || rocky.catalog.length > 0) && (
               <details className="balance-breakdown">
-                <summary>Raw getCoinsBalance() response ({rocky.balances.length} token(s))</summary>
-                <pre>{JSON.stringify(rocky.balances, null, 2)}</pre>
+                <summary>Raw catalog and balance responses</summary>
+                <pre>
+                  {JSON.stringify(
+                    { catalog: rocky.catalog, balances: rocky.balances },
+                    null,
+                    2,
+                  )}
+                </pre>
               </details>
             )}
           </div>
@@ -234,8 +253,8 @@ export function RockyPage({
         <section className="card">
           <h2>Transfer</h2>
           <p className="hint">
-            Send tokens via Rocky <code>transfer()</code>. Amount and asset are validated client-side
-            before the request reaches the extension.
+            Sendable assets come from Rocky's catalog and use the wallet-issued <code>asset_id</code>.
+            The Extension owns the confirmation, signing, and submission flow.
           </p>
           <div className="rocky-transfer-form">
             <label>
@@ -262,12 +281,13 @@ export function RockyPage({
                 Asset
                 <select
                   className="sign-input"
-                  value={txAsset}
-                  onChange={(e) => setTxAsset(e.target.value as RockyAssetSymbol)}
+                  value={txAssetKey}
+                  onChange={(e) => setTxAssetKey(e.target.value)}
                 >
-                  {rocky.assets.map((a) => (
-                    <option key={a} value={a}>
-                      {a}
+                  {rocky.transferAssets.map((asset) => (
+                    <option key={assetOptionValue(asset)} value={assetOptionValue(asset)}>
+                      {asset.label}
+                      {asset.label !== asset.symbol ? ` (${asset.symbol})` : ''}
                     </option>
                   ))}
                 </select>
@@ -284,8 +304,16 @@ export function RockyPage({
             </label>
           </div>
           <div className="button-row">
-            <button onClick={handleTransfer} disabled={transferState.loading || !txTo.trim() || !txAmount.trim()}>
-              {transferState.loading ? 'Sending…' : `Send ${txAsset}`}
+            <button
+              onClick={handleTransfer}
+              disabled={
+                transferState.loading ||
+                !txAsset ||
+                !txTo.trim() ||
+                !txAmount.trim()
+              }
+            >
+              {transferState.loading ? 'Sending…' : `Send ${txAsset?.label ?? 'asset'}`}
             </button>
           </div>
           {transferState.result && (
