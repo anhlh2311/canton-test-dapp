@@ -1072,9 +1072,11 @@ function PartyLayerClientProvider({
 export function PartyLayerPage({
   onExit,
   onOpenRocky,
+  onOpenConsole,
 }: {
   onExit: () => void;
   onOpenRocky: () => void;
+  onOpenConsole: () => void;
 }) {
   const queryClient = useMemo(() => new QueryClient(), []);
   const [kitNetwork, setKitNetwork] = useState<KitNetwork>(DEFAULT_NETWORK);
@@ -1100,6 +1102,7 @@ export function PartyLayerPage({
         onStandard={onExit}
         onRocky={onOpenRocky}
         onPartyLayer={() => {}}
+        onConsole={onOpenConsole}
       />
 
       <QueryClientProvider client={queryClient}>

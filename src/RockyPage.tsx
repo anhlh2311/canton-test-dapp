@@ -27,9 +27,11 @@ function assetOptionValue(asset: RockyAssetOption): string {
 export function RockyPage({
   onExit,
   onOpenPartyLayer,
+  onOpenConsole,
 }: {
   onExit: () => void;
   onOpenPartyLayer: () => void;
+  onOpenConsole: () => void;
 }) {
   const rocky = useRockyWallet('Canton Test dApp');
   const connected = rocky.status === 'connected';
@@ -106,6 +108,7 @@ export function RockyPage({
         onStandard={onExit}
         onRocky={() => {}}
         onPartyLayer={onOpenPartyLayer}
+        onConsole={onOpenConsole}
       />
 
       {/* Connection */}

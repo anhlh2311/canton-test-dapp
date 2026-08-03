@@ -6,6 +6,7 @@ import type { ProviderAdapter } from '@canton-network/core-wallet-discovery';
 import { CantonWcAdapter } from './walletconnect-canton-adapter';
 import { RockyPage } from './RockyPage';
 import { PartyLayerPage } from './PartyLayerPage';
+import { ConsolePage } from './ConsolePage';
 import { ConnectionModeNav } from './ConnectionModeNav';
 
 const WC_PROJECT_ID = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string | undefined;
@@ -372,9 +373,11 @@ function parseBytesAuto(input: string, label = 'input'): { bytes: Uint8Array; fo
 function CantonDapp({
   onOpenRocky,
   onOpenPartyLayer,
+  onOpenConsole,
 }: {
   onOpenRocky: () => void;
   onOpenPartyLayer: () => void;
+  onOpenConsole: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<TabId>('accounts');
   const [extensionDetected, setExtensionDetected] = useState<boolean | null>(null);
@@ -1382,6 +1385,7 @@ function CantonDapp({
         onStandard={() => {}}
         onRocky={onOpenRocky}
         onPartyLayer={onOpenPartyLayer}
+        onConsole={onOpenConsole}
       />
 
       {/* Extension Detection */}
@@ -1977,6 +1981,7 @@ function App() {
       <RockyPage
         onExit={() => navigate('/')}
         onOpenPartyLayer={() => navigate('/partylayer/')}
+        onOpenConsole={() => navigate('/console/')}
       />
     );
   }
@@ -1985,6 +1990,16 @@ function App() {
       <PartyLayerPage
         onExit={() => navigate('/')}
         onOpenRocky={() => navigate('/rocky/')}
+        onOpenConsole={() => navigate('/console/')}
+      />
+    );
+  }
+  if (/^\/console(\/|$)/i.test(path)) {
+    return (
+      <ConsolePage
+        onExit={() => navigate('/')}
+        onOpenRocky={() => navigate('/rocky/')}
+        onOpenPartyLayer={() => navigate('/partylayer/')}
       />
     );
   }
@@ -1992,6 +2007,7 @@ function App() {
     <CantonDapp
       onOpenRocky={() => navigate('/rocky/')}
       onOpenPartyLayer={() => navigate('/partylayer/')}
+      onOpenConsole={() => navigate('/console/')}
     />
   );
 }
