@@ -61,10 +61,23 @@ export function formatConsoleError(err: unknown): string {
   if (typeof err === 'string') return err;
   if (err && typeof err === 'object') {
     const o = err as Record<string, unknown>;
+    const status = o.status;
+    const name = typeof o.name === 'string' ? o.name : '';
     const msg =
       (typeof o.message === 'string' && o.message) ||
       (typeof o.error === 'string' && o.error) ||
       '';
+    const is429 =
+      status === 429 ||
+      name.toLowerCase().includes('throttl') ||
+      msg.toLowerCase().includes('too many requests');
+    if (is429) {
+      return (
+        'Console QR relay rate-limited (HTTP 429 Too Many Requests). ' +
+        'Wait ~30–60s before retrying remote/QR connect, or switch target to local (extension).' +
+        (msg ? `\n${msg}` : '')
+      );
+    }
     try {
       return msg ? `${msg}\n${JSON.stringify(o, null, 2)}` : JSON.stringify(o, null, 2);
     } catch {
@@ -72,6 +85,31 @@ export function formatConsoleError(err: unknown): string {
     }
   }
   return String(err);
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(
+        new Error(
+          `${label} timed out after ${Math.round(ms / 1000)}s. ` +
+            'QR/mobile relay may be waiting on the phone or rate-limited (429). ' +
+            'Cancel, wait, then retry — or use local (extension) target.',
+        ),
+      );
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  }) as Promise<T>;
+}
+
+function connectTimeoutMs(target: ConsoleConnectTarget): number {
+  // Remote/QR waits for the user to scan; still bound so the UI cannot freeze forever.
+  if (target === 'remote') return 90_000;
+  if (target === 'combined') return 60_000;
+  return 30_000;
 }
 
 export function maskToken(token: string | undefined): string {
@@ -111,17 +149,32 @@ export function useConsoleWallet() {
   const [error, setError] = useState<string | undefined>();
   const [tokens, setTokens] = useState<LedgerTokenBundle | null>(null);
   const tokensRef = useRef<LedgerTokenBundle | null>(null);
+  /** Bumped to ignore late connect/refreshSession results after cancel. */
+  const connectGenRef = useRef(0);
 
   useEffect(() => {
     tokensRef.current = tokens;
   }, [tokens]);
 
   const refreshSession = useCallback(async () => {
-    const [primary, activeNetwork, st] = await Promise.all([
-      consoleWallet.getPrimaryAccount(),
-      consoleWallet.getActiveNetwork(),
-      consoleWallet.status(),
+    // Remote relay calls (esp. GET_ACTIVE_NETWORK) can hang or 429 — bound each probe.
+    const settled = await Promise.allSettled([
+      withTimeout(consoleWallet.getPrimaryAccount(), 15_000, 'getPrimaryAccount'),
+      withTimeout(consoleWallet.getActiveNetwork(), 15_000, 'getActiveNetwork'),
+      withTimeout(consoleWallet.status(), 15_000, 'status'),
     ]);
+    const primary = settled[0].status === 'fulfilled' ? settled[0].value : undefined;
+    const activeNetwork = settled[1].status === 'fulfilled' ? settled[1].value : undefined;
+    const st = settled[2].status === 'fulfilled' ? settled[2].value : undefined;
+
+    const sessionWarnings = settled
+      .map((r, i) => {
+        if (r.status !== 'rejected') return null;
+        const label = ['getPrimaryAccount', 'getActiveNetwork', 'status'][i];
+        return `${label}: ${formatConsoleError(r.reason)}`;
+      })
+      .filter(Boolean);
+
     if (primary?.partyId) {
       setAccount({
         partyId: primary.partyId,
@@ -139,12 +192,19 @@ export function useConsoleWallet() {
         : primary?.partyId,
     );
     if (connected && primary?.partyId) setStatus('connected');
-    return { primary, activeNetwork, connected };
+    if (sessionWarnings.length > 0) {
+      setError(`Session partially loaded (relay may be rate-limited):\n${sessionWarnings.join('\n')}`);
+    }
+    return { primary, activeNetwork, connected, sessionWarnings };
   }, []);
 
   const checkAvailability = useCallback(async () => {
     try {
-      const res = await consoleWallet.checkExtensionAvailability();
+      const res = await withTimeout(
+        consoleWallet.checkExtensionAvailability(),
+        8_000,
+        'checkExtensionAvailability',
+      );
       const installed = res.status === 'installed';
       setAvailability({
         installed,
@@ -159,7 +219,7 @@ export function useConsoleWallet() {
       return res;
     } catch (e) {
       setAvailability({ installed: false, raw: e });
-      setStatus('unavailable');
+      setStatus((cur) => (cur === 'connected' || cur === 'connecting' ? cur : 'unavailable'));
       setError(formatConsoleError(e));
       return null;
     }
@@ -169,14 +229,37 @@ export function useConsoleWallet() {
     void checkAvailability();
   }, [checkAvailability]);
 
+  const cancelConnect = useCallback(async () => {
+    connectGenRef.current += 1;
+    try {
+      await consoleWallet.disconnect();
+    } catch {
+      /* best-effort — tears down QR session if possible */
+    }
+    setTokens(null);
+    tokensRef.current = null;
+    setStatus(availability?.installed ? 'available' : 'unavailable');
+    setError('Connect cancelled. If you hit 429, wait before retrying remote/QR.');
+  }, [availability?.installed]);
+
   const connect = useCallback(async () => {
+    const gen = ++connectGenRef.current;
     setStatus('connecting');
     setError(undefined);
+    const timeoutMs = connectTimeoutMs(target);
     try {
-      const res = await consoleWallet.connect({
-        name: APP_NAME,
-        target,
-      });
+      const res = await withTimeout(
+        consoleWallet.connect({
+          name: APP_NAME,
+          target,
+        }),
+        timeoutMs,
+        `Connect (${target})`,
+      );
+      if (gen !== connectGenRef.current) {
+        throw new Error('Connect cancelled');
+      }
+
       const ok =
         res && typeof res === 'object' && 'isConnected' in res
           ? Boolean((res as { isConnected: boolean }).isConnected)
@@ -186,15 +269,35 @@ export function useConsoleWallet() {
         setError('Connect did not return connected status');
         return;
       }
-      await refreshSession();
+      // Do not block "connected" on hung GET_ACTIVE_NETWORK after QR approve.
+      try {
+        await refreshSession();
+      } catch (sessionErr) {
+        setError(
+          `Connected, but session refresh failed:\n${formatConsoleError(sessionErr)}`,
+        );
+      }
+      if (gen !== connectGenRef.current) {
+        throw new Error('Connect cancelled');
+      }
       setStatus('connected');
     } catch (e) {
-      setStatus('error');
+      if (gen !== connectGenRef.current) {
+        throw new Error('Connect cancelled');
+      }
+      try {
+        await consoleWallet.disconnect();
+      } catch {
+        /* ignore */
+      }
+      setStatus(availability?.installed ? 'available' : 'error');
       setError(formatConsoleError(e));
+      throw e;
     }
-  }, [refreshSession, target]);
+  }, [availability?.installed, refreshSession, target]);
 
   const disconnect = useCallback(async () => {
+    connectGenRef.current += 1;
     try {
       await consoleWallet.disconnect();
     } catch {
@@ -439,6 +542,7 @@ export function useConsoleWallet() {
     tokens,
     checkAvailability,
     connect,
+    cancelConnect,
     disconnect,
     refreshSession,
     signMessage,

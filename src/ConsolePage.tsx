@@ -128,7 +128,7 @@ export function ConsolePage({
       <StepCard
         n={1}
         title="Setup & connect"
-        hint="Check extension availability, choose local / remote / combined, then connect."
+        hint="Check extension availability, choose local / remote / combined, then connect. Remote/QR uses Console’s relay — if you hit HTTP 429, wait ~30–60s or switch to local. Connect times out so the UI cannot freeze forever."
         result={stepResults.connect}
       >
         <div className="status-row">
@@ -137,6 +137,9 @@ export function ConsolePage({
             {cw.status}
             {cw.availability
               ? ` — extension ${cw.availability.installed ? 'installed' : 'not installed'}`
+              : ''}
+            {cw.status === 'connecting' || busy === 'connect'
+              ? ' (waiting for wallet / QR — use Cancel if stuck)'
               : ''}
           </span>
         </div>
@@ -150,7 +153,7 @@ export function ConsolePage({
           <select
             className="verify-scheme"
             value={cw.target}
-            disabled={connected || busy !== null}
+            disabled={connected || cw.status === 'connecting' || busy === 'connect'}
             onChange={(e) => cw.setTarget(e.target.value as ConsoleConnectTarget)}
           >
             <option value="combined">combined (extension preferred)</option>
@@ -163,31 +166,44 @@ export function ConsolePage({
             onClick={() =>
               runStep('avail', 'Availability checked', () => cw.checkAvailability())
             }
-            disabled={busy !== null}
+            disabled={busy !== null || cw.status === 'connecting'}
           >
             {busy === 'avail' ? 'Checking…' : 'Check extension'}
           </button>
-          <button
-            onClick={() =>
-              runStep('connect', connected ? 'Disconnected' : 'Connected', async () => {
-                if (connected) {
-                  await cw.disconnect();
-                  return { disconnected: true };
-                }
-                await cw.connect();
-                return cw.account;
-              })
-            }
-            disabled={busy !== null || cw.status === 'unavailable'}
-          >
-            {busy === 'connect'
-              ? 'Working…'
-              : connected
-                ? 'Disconnect'
-                : cw.status === 'connecting'
-                  ? 'Connecting…'
-                  : 'Connect'}
-          </button>
+          {cw.status === 'connecting' || busy === 'connect' ? (
+            <button
+              onClick={async () => {
+                await cw.cancelConnect();
+                setBusy(null);
+                setStepResults((prev) => ({
+                  ...prev,
+                  connect: {
+                    ok: false,
+                    label: '',
+                    error: 'Connect cancelled. Wait before retrying remote/QR if you saw 429.',
+                  },
+                }));
+              }}
+            >
+              Cancel connect
+            </button>
+          ) : (
+            <button
+              onClick={() =>
+                runStep('connect', connected ? 'Disconnected' : 'Connected', async () => {
+                  if (connected) {
+                    await cw.disconnect();
+                    return { disconnected: true };
+                  }
+                  await cw.connect();
+                  return { account: cw.account, network: cw.network };
+                })
+              }
+              disabled={busy !== null || cw.status === 'unavailable'}
+            >
+              {connected ? 'Disconnect' : 'Connect'}
+            </button>
+          )}
         </div>
         {stepResults.avail?.raw && (
           <details className="balance-breakdown">
