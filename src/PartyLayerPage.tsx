@@ -8,7 +8,6 @@ import {
   useAccount,
   useSignMessage,
   useLedgerApi,
-  useSubmitTransaction,
   usePartyLayer,
   useWallets,
   useRegistryStatus,
@@ -17,6 +16,7 @@ import {
   CANTON_NETWORKS,
   createPartyLayer,
   getBuiltinAdapters,
+  PartyLayerError,
   SendAdapter,
   type CapabilityKey,
   type NetworkId,
@@ -25,6 +25,64 @@ import {
 } from '@partylayer/sdk';
 import './App.css';
 import { ConnectionModeNav } from './ConnectionModeNav';
+import { ConsoleDamlAdapter } from './console-daml-adapter';
+
+/** Expand PartyLayer / wallet errors so toast/UI show cause + details, not only "Unknown error". */
+function formatPartyLayerError(err: unknown): string {
+  if (err instanceof PartyLayerError) {
+    const parts = [`[${err.code}] ${err.message}`];
+    if (err.details && Object.keys(err.details).length > 0) {
+      try {
+        parts.push(`details: ${JSON.stringify(err.details)}`);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (err.cause !== undefined) {
+      if (err.cause instanceof Error) {
+        parts.push(`cause: ${err.cause.name}: ${err.cause.message}`);
+      } else {
+        try {
+          parts.push(`cause: ${JSON.stringify(err.cause)}`);
+        } catch {
+          parts.push(`cause: ${String(err.cause)}`);
+        }
+      }
+    }
+    return parts.join('\n');
+  }
+  if (err instanceof Error) {
+    const cause =
+      'cause' in err && err.cause !== undefined
+        ? err.cause instanceof Error
+          ? `\ncause: ${err.cause.name}: ${err.cause.message}`
+          : `\ncause: ${(() => {
+              try {
+                return JSON.stringify(err.cause);
+              } catch {
+                return String(err.cause);
+              }
+            })()}`
+        : '';
+    return `${err.message}${cause}`;
+  }
+  if (err && typeof err === 'object') {
+    const o = err as Record<string, unknown>;
+    if (typeof o.message === 'string') {
+      try {
+        return `${o.message}\n${JSON.stringify(o, null, 2)}`;
+      } catch {
+        return o.message;
+      }
+    }
+    try {
+      return JSON.stringify(err, null, 2);
+    } catch {
+      return String(err);
+    }
+  }
+  return String(err);
+}
 
 type KitNetwork = 'devnet' | 'testnet' | 'mainnet';
 
@@ -231,7 +289,6 @@ function PartyLayerDemo({
   const { status: registryStatus } = useRegistryStatus();
   const { signMessage, isSigning, error: signError } = useSignMessage();
   const { ledgerApi, isLoading: ledgerLoading, error: ledgerError } = useLedgerApi();
-  const { submitTransaction, isSubmitting, error: submitError } = useSubmitTransaction();
   const client = usePartyLayer();
 
   const [caps, setCaps] = useState<CapabilityKey[]>([]);
@@ -248,6 +305,7 @@ function PartyLayerDemo({
     path: string;
     raw: string;
   } | null>(null);
+  const [holdingsError, setHoldingsError] = useState<string | null>(null);
   const [pingState, setPingState] = useState<{
     receipt?: TxReceipt;
     error?: string;
@@ -288,6 +346,8 @@ function PartyLayerDemo({
       setCaps([]);
       setSessionMeta({});
       setPingState({ status: 'idle' });
+      setHoldings(null);
+      setHoldingsError(null);
       return;
     }
     let cancelled = false;
@@ -346,12 +406,20 @@ function PartyLayerDemo({
   async function handleQueryHoldings() {
     if (!party) return;
     setHoldings(null);
+    setHoldingsError(null);
 
     const session = await client.getActiveSession();
     const sessionCaps = session?.capabilitiesSnapshot ?? caps;
     if (!sessionCaps.includes('ledgerApi')) {
+      setHoldingsError(
+        `Connected wallet (${sessionMeta.walletId ?? 'unknown'}) has no ledgerApi capability. ` +
+          `Capabilities: [${sessionCaps.join(', ') || 'none'}]. ` +
+          'Console needs ConsoleAdapter / registry config.ledgerApi; Cantor8 / Walley do not expose ledgerApi.',
+      );
       return;
     }
+
+    const pathErrors: string[] = [];
 
     // Path A — docs (Console / Nightly / Bron / WC): ledger-end + Holding interface
     try {
@@ -403,65 +471,83 @@ function PartyLayerDemo({
           }
         }
       }
-    } catch {
+    } catch (e) {
+      pathErrors.push(`Path A (ledger-end + active-contracts): ${formatPartyLayerError(e)}`);
       // Fall through to Loop-compatible ACS (ledger-end unsupported on Loop).
     }
 
     // Path B — Loop-compatible ACS (also works as fallback): Holding interfaceId
-    const holdingAcs = await ledgerApi({
-      requestMethod: 'POST',
-      resource: '/v2/state/acs',
-      body: JSON.stringify({
-        filter: {
-          filtersByParty: {
-            [party]: {
-              inclusive: {
-                templateFilters: [{ interfaceId: HOLDING_INTERFACE }],
+    try {
+      const holdingAcs = await ledgerApi({
+        requestMethod: 'POST',
+        resource: '/v2/state/acs',
+        body: JSON.stringify({
+          filter: {
+            filtersByParty: {
+              [party]: {
+                inclusive: {
+                  templateFilters: [{ interfaceId: HOLDING_INTERFACE }],
+                },
               },
             },
           },
-        },
-      }),
-    });
-    if (holdingAcs) {
-      const raw = ledgerResponseText(holdingAcs);
-      const entries = parseAcsEntries(raw);
-      const summary = summarizeHoldings(entries);
-      if (summary.contractCount > 0) {
+        }),
+      });
+      if (holdingAcs) {
+        const raw = ledgerResponseText(holdingAcs);
+        const entries = parseAcsEntries(raw);
+        const summary = summarizeHoldings(entries);
+        if (summary.contractCount > 0) {
+          setHoldings({
+            ...summary,
+            path: 'POST /v2/state/acs (Holding interfaceId)',
+            raw,
+          });
+          return;
+        }
+      }
+    } catch (e) {
+      pathErrors.push(`Path B (/v2/state/acs Holding): ${formatPartyLayerError(e)}`);
+    }
+
+    // Path C — Amulet template (Loop example app shape)
+    try {
+      const amuletAcs = await ledgerApi({
+        requestMethod: 'POST',
+        resource: '/v2/state/acs',
+        body: JSON.stringify({
+          filter: {
+            filtersByParty: {
+              [party]: {
+                inclusive: {
+                  templateFilters: [{ templateId: AMULET_TEMPLATE }],
+                },
+              },
+            },
+          },
+        }),
+      });
+      if (amuletAcs) {
+        const raw = ledgerResponseText(amuletAcs);
+        const entries = parseAcsEntries(raw);
+        const summary = summarizeHoldings(entries);
         setHoldings({
           ...summary,
-          path: 'POST /v2/state/acs (Holding interfaceId)',
+          path: 'POST /v2/state/acs (Amulet template)',
           raw,
         });
         return;
       }
+    } catch (e) {
+      pathErrors.push(`Path C (/v2/state/acs Amulet): ${formatPartyLayerError(e)}`);
     }
 
-    // Path C — Amulet template (Loop example app shape)
-    const amuletAcs = await ledgerApi({
-      requestMethod: 'POST',
-      resource: '/v2/state/acs',
-      body: JSON.stringify({
-        filter: {
-          filtersByParty: {
-            [party]: {
-              inclusive: {
-                templateFilters: [{ templateId: AMULET_TEMPLATE }],
-              },
-            },
-          },
-        },
-      }),
-    });
-    if (amuletAcs) {
-      const raw = ledgerResponseText(amuletAcs);
-      const entries = parseAcsEntries(raw);
-      const summary = summarizeHoldings(entries);
-      setHoldings({
-        ...summary,
-        path: 'POST /v2/state/acs (Amulet template)',
-        raw,
-      });
+    if (pathErrors.length > 0) {
+      setHoldingsError(pathErrors.join('\n\n'));
+    } else if (ledgerError) {
+      setHoldingsError(formatPartyLayerError(ledgerError));
+    } else {
+      setHoldingsError('All ACS query paths returned empty / no response.');
     }
   }
 
@@ -478,51 +564,35 @@ function PartyLayerDemo({
         setPingState({
           status: 'error',
           error:
-            'Connected wallet lacks submitTransaction (e.g. Cantor8 / Bron). Use signTransaction or another wallet.',
+            `Connected wallet (${walletId || 'unknown'}) lacks submitTransaction. ` +
+            `Capabilities: [${sessionCaps.join(', ') || 'none'}]. ` +
+            'Cantor8 / Bron need signTransaction instead.',
         });
         return;
       }
 
-      let receipt: TxReceipt | null = null;
+      // Call the client directly so errors throw (useSubmitTransaction swallows
+      // and returns null, which races with React state and loses detail).
+      const signedTx = isLoopWallet(walletId)
+        ? createPingLoopSignedTx(party)
+        : createPingPreparePayload(party);
 
-      if (isLoopWallet(walletId)) {
-        // Loop: proprietary SDK — submitTransaction({ signedTx: TransactionPayload }).
-        receipt = await submitTransaction({
-          signedTx: createPingLoopSignedTx(party),
-        });
-      } else {
-        // Send / Console / Nightly: fused prepare+execute via submitTransaction.
-        // Send has no signTransaction — do NOT use asProvider().prepareExecute*
-        // (PartyLayer's CIP-0103 bridge implements that as sign-then-submit).
-        // Requires registered SendAdapter (see PartyLayerClientProvider adapters);
-        // GenericAnnounceAdapter wrongly nests { signedTx } into prepareExecute.
-        receipt = await submitTransaction({
-          signedTx: createPingPreparePayload(party),
-        });
-      }
-
-      if (!receipt) {
-        setPingState({
-          status: 'error',
-          error: submitError?.message ?? 'Submit returned no receipt',
-        });
-        return;
-      }
+      const receipt = await client.submitTransaction({ signedTx });
       setPingState({ status: 'success', receipt });
     } catch (e) {
       setPingState({
         status: 'error',
-        error: e instanceof Error ? e.message : String(e),
+        error: formatPartyLayerError(e),
       });
     }
   }
 
   const toastStatus =
-    pingState.status === 'pending' || isSubmitting
+    pingState.status === 'pending'
       ? 'pending'
       : pingState.status === 'success'
         ? 'success'
-        : pingState.status === 'error' || submitError
+        : pingState.status === 'error'
           ? 'error'
           : 'idle';
 
@@ -773,7 +843,10 @@ function PartyLayerDemo({
           </p>
           {!canLedgerApi && caps.length > 0 && (
             <p className="hint">
-              Connected wallet has no <code>ledgerApi</code> capability (e.g. Cantor8 / Walley).
+              Connected wallet (<code>{sessionMeta.walletId ?? 'unknown'}</code>) has no{' '}
+              <code>ledgerApi</code> capability. Caps: <code>{caps.join(', ') || 'none'}</code>.
+              Expected for Cantor8 / Walley; Console should advertise it when{' '}
+              <code>ConsoleAdapter</code> is registered (this page does).
             </p>
           )}
           <div className="button-row">
@@ -785,10 +858,12 @@ function PartyLayerDemo({
               {ledgerLoading ? 'Querying…' : 'Query Holdings / Balance'}
             </button>
           </div>
-          {ledgerError && (
-            <div className="status-row">
+          {(holdingsError || ledgerError) && (
+            <div className="status-row" style={{ alignItems: 'flex-start' }}>
               <span className="status-dot red" />
-              <span>{ledgerError.message}</span>
+              <pre className="hint" style={{ margin: 0, whiteSpace: 'pre-wrap' }}>
+                {holdingsError ?? formatPartyLayerError(ledgerError)}
+              </pre>
             </div>
           )}
           {holdings && (
@@ -834,37 +909,41 @@ function PartyLayerDemo({
         <section className="card">
           <h2>Submit Transaction</h2>
           <p className="hint">
-            Both Loop and Send use <code>useSubmitTransaction(&#123; signedTx &#125;)</code> (fused
-            sign+submit). Send has no <code>signTransaction</code> — avoid{' '}
-            <code>asProvider().prepareExecute*</code>, which maps to sign-then-submit. Official{' '}
-            <code>SendAdapter</code> is registered so <code>signedTx</code> is forwarded as flat{' '}
-            <code>prepareExecuteAndWait</code>. Template: <code>{PING_TEMPLATE}</code>.
+            Uses <code>client.submitTransaction(&#123; signedTx &#125;)</code> (fused sign+submit).
+            Loop gets a proprietary payload; Send / Console / Nightly get a flat CIP-0103
+            ExecuteRequest. <code>SendAdapter</code> + <code>ConsoleDamlAdapter</code> are
+            registered so <code>signedTx</code> is not double-wrapped. Template:{' '}
+            <code>{PING_TEMPLATE}</code>.
           </p>
           {!canSubmit && caps.length > 0 && (
             <p className="hint">
-              Connected wallet has no <code>submitTransaction</code> (e.g. Cantor8 / Bron). Use{' '}
-              <code>signTransaction</code> or another wallet.
+              Connected wallet (<code>{sessionMeta.walletId ?? 'unknown'}</code>) has no{' '}
+              <code>submitTransaction</code>. Caps: <code>{caps.join(', ') || 'none'}</code>.
             </p>
           )}
           <div className="button-row">
             <button
               onClick={handleCreatePing}
-              disabled={isSubmitting || !party || !canSubmit}
+              disabled={pingState.status === 'pending' || !party || !canSubmit}
               title={!canSubmit ? 'Wallet lacks submitTransaction capability' : ''}
             >
-              {isSubmitting || pingState.status === 'pending' ? 'Submitting…' : 'Create Ping Contract'}
+              {pingState.status === 'pending' ? 'Submitting…' : 'Create Ping Contract'}
             </button>
           </div>
 
           <TransactionToast
             status={toastStatus}
-            error={
-              toastStatus === 'error'
-                ? new Error(pingState.error ?? submitError?.message ?? 'unknown error')
-                : null
-            }
+            error={toastStatus === 'error' ? new Error(pingState.error ?? 'unknown error') : null}
             receipt={pingState.receipt ?? null}
           />
+          {pingState.status === 'error' && pingState.error && (
+            <pre
+              className="hint"
+              style={{ marginTop: 8, whiteSpace: 'pre-wrap', color: 'var(--error, #c44)' }}
+            >
+              {pingState.error}
+            </pre>
+          )}
           {toastStatus === 'success' && pingState.receipt && (
             <div className="balance-result" style={{ marginTop: 8 }}>
               <div className="account-row">
@@ -964,10 +1043,14 @@ export function PartyLayerPage({
 }) {
   const queryClient = useMemo(() => new QueryClient(), []);
   const [kitNetwork, setKitNetwork] = useState<KitNetwork>(DEFAULT_NETWORK);
-  // Send is announce-only and NOT in getBuiltinAdapters(); without SendAdapter the
-  // SDK falls back to GenericAnnounceAdapter (broken signedTx nesting). Registering
-  // it also skips the announce GenericAnnounceAdapter for walletId "send".
-  const adapters = useMemo(() => [...getBuiltinAdapters(), new SendAdapter()], []);
+  // Send + Console are announce-only and NOT in getBuiltinAdapters(). Without
+  // first-party adapters the SDK falls back to GenericAnnounceAdapter (no
+  // ledgerApi for Console; broken signedTx nesting). Registering them also
+  // skips the announce GenericAnnounceAdapter for those walletIds.
+  const adapters = useMemo(
+    () => [...getBuiltinAdapters(), new SendAdapter(), new ConsoleDamlAdapter()],
+    [],
+  );
 
   return (
     <div className="app">
