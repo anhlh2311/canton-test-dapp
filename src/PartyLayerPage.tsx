@@ -4,6 +4,7 @@ import {
   ConnectButton,
   PartyLayerProvider,
   ThemeProvider,
+  TransactionToast,
   useAccount,
   useSignMessage,
   useLedgerApi,
@@ -493,7 +494,7 @@ function PartyLayerDemo({
         // Send / Console / Nightly: fused prepare+execute via submitTransaction.
         // Send has no signTransaction — do NOT use asProvider().prepareExecute*
         // (PartyLayer's CIP-0103 bridge implements that as sign-then-submit).
-        // Requires registered SendAdapter (see PartyLayerKit adapters below);
+        // Requires registered SendAdapter (see PartyLayerClientProvider adapters);
         // GenericAnnounceAdapter wrongly nests { signedTx } into prepareExecute.
         receipt = await submitTransaction({
           signedTx: createPingPreparePayload(party),
@@ -855,62 +856,57 @@ function PartyLayerDemo({
             </button>
           </div>
 
-          {toastStatus !== 'idle' && (
-            <div
-              className={`partylayer-tx-toast partylayer-tx-toast--${toastStatus}`}
-              role="status"
-            >
-              <div className="partylayer-tx-toast-title">
-                {toastStatus === 'pending'
-                  ? 'Submitting transaction…'
-                  : toastStatus === 'success'
-                    ? 'Transaction submitted'
-                    : `Transaction failed: ${pingState.error ?? submitError?.message ?? 'unknown error'}`}
+          <TransactionToast
+            status={toastStatus}
+            error={
+              toastStatus === 'error'
+                ? new Error(pingState.error ?? submitError?.message ?? 'unknown error')
+                : null
+            }
+            receipt={pingState.receipt ?? null}
+          />
+          {toastStatus === 'success' && pingState.receipt && (
+            <div className="balance-result" style={{ marginTop: 8 }}>
+              <div className="account-row">
+                <span className="account-label">transactionHash:</span>
+                <code className="account-value wrap">{pingState.receipt.transactionHash}</code>
+                <button
+                  className="sign-copy"
+                  onClick={() => copy(String(pingState.receipt!.transactionHash))}
+                >
+                  Copy
+                </button>
               </div>
-              {toastStatus === 'success' && pingState.receipt && (
-                <div className="balance-result" style={{ marginTop: 8 }}>
-                  <div className="account-row">
-                    <span className="account-label">transactionHash:</span>
-                    <code className="account-value wrap">{pingState.receipt.transactionHash}</code>
-                    <button
-                      className="sign-copy"
-                      onClick={() => copy(String(pingState.receipt!.transactionHash))}
-                    >
-                      Copy
-                    </button>
-                  </div>
-                  {pingState.receipt.commandId && (
-                    <div className="account-row">
-                      <span className="account-label">commandId:</span>
-                      <code className="account-value wrap">{pingState.receipt.commandId}</code>
-                      <button
-                        className="sign-copy"
-                        onClick={() => copy(String(pingState.receipt!.commandId))}
-                      >
-                        Copy
-                      </button>
-                    </div>
-                  )}
-                  {pingState.receipt.updateId && (
-                    <div className="account-row">
-                      <span className="account-label">updateId:</span>
-                      <code className="account-value wrap">{pingState.receipt.updateId}</code>
-                      <button
-                        className="sign-copy"
-                        onClick={() => copy(String(pingState.receipt!.updateId))}
-                      >
-                        Copy
-                      </button>
-                    </div>
-                  )}
-                  <div className="account-row account-row-meta">
-                    <span className="account-label">submittedAt:</span>
-                    <code className="account-value">
-                      {new Date(pingState.receipt.submittedAt).toLocaleString()}
-                    </code>
-                  </div>
+              {pingState.receipt.commandId && (
+                <div className="account-row">
+                  <span className="account-label">commandId:</span>
+                  <code className="account-value wrap">{pingState.receipt.commandId}</code>
+                  <button
+                    className="sign-copy"
+                    onClick={() => copy(String(pingState.receipt!.commandId))}
+                  >
+                    Copy
+                  </button>
                 </div>
               )}
+              {pingState.receipt.updateId && (
+                <div className="account-row">
+                  <span className="account-label">updateId:</span>
+                  <code className="account-value wrap">{pingState.receipt.updateId}</code>
+                  <button
+                    className="sign-copy"
+                    onClick={() => copy(String(pingState.receipt!.updateId))}
+                  >
+                    Copy
+                  </button>
+                </div>
+              )}
+              <div className="account-row account-row-meta">
+                <span className="account-label">submittedAt:</span>
+                <code className="account-value">
+                  {new Date(pingState.receipt.submittedAt).toLocaleString()}
+                </code>
+              </div>
             </div>
           )}
         </section>
@@ -934,6 +930,8 @@ function PartyLayerClientProvider({
       // Follow the wallet: do not block sign/submit/ledger when Kit preferred ≠ wallet.
       // (Send often reports `canton:testnet`, which ≠ PartyLayer's `canton:da-testnet`.)
       networkEnforcement: 'off',
+      // SDK ≥0.16 is silent by default; opt into console for this test dApp.
+      logger: console,
       app: {
         name: 'Canton Test dApp',
         origin: typeof window !== 'undefined' ? window.location.origin : undefined,

@@ -361,12 +361,17 @@
     "@canton-network/core-wallet-ui-components" "^1.1.0"
     qrcode "^1.5.4"
 
+"@cantor8/wallet-connect-sdk@^0.4.0":
+  version "0.4.0"
+  resolved "https://registry.yarnpkg.com/@cantor8/wallet-connect-sdk/-/wallet-connect-sdk-0.4.0.tgz#bfb0fa5b197202cfacf4b1368abcf0cda87c5eed"
+  integrity sha512-BeSXu4U0S2KfPPjfe0Q/QLpjdOCzLaWOEQK/OBy6qz/g3K32NpSSjNFjgS5GImCc9TQN8k9QjvNYKBWB+RfPRQ==
+
 "@cloudflare/json-schema-walker@^0.1.1":
   version "0.1.1"
   resolved "https://registry.yarnpkg.com/@cloudflare/json-schema-walker/-/json-schema-walker-0.1.1.tgz#d1cc94065327b0b3800158db40cb78124a3476de"
   integrity sha512-P3n0hEgk1m6uKWgL4Yb1owzXVG4pM70G4kRnDQxZXiVvfCRtaqiHu+ZRiRPzmwGBiLTO1LWc2yR1M8oz0YkXww==
 
-"@console-wallet/dapp-sdk@^2.1.5":
+"@console-wallet/dapp-sdk@^2.2.8":
   version "2.2.8"
   resolved "https://registry.yarnpkg.com/@console-wallet/dapp-sdk/-/dapp-sdk-2.2.8.tgz#aeb4c67f733c0bb70c1777b3cf1ee67bd5d4afbb"
   integrity sha512-wZfiNhD2ugggISROcgb2KzXq9Tg/5qLjXMPcumw09qt8K+gO33hR8b5BqJNzzTVZH3ATn9MuMdszpU2zlp/ovg==
@@ -696,102 +701,103 @@
   resolved "https://registry.yarnpkg.com/@noble/hashes/-/hashes-2.2.0.tgz#22da1d16a469954fce877055d559900a6c73b63b"
   integrity sha512-IYqDGiTXab6FniAgnSdZwgWbomxpy9FtYvLKs7wCUs2a8RkITG+DFGO1DM9cr+E3/RgADRpFjrKVaJ1z6sjtEg==
 
-"@partylayer/adapter-bron@^0.2.19":
-  version "0.2.19"
-  resolved "https://registry.yarnpkg.com/@partylayer/adapter-bron/-/adapter-bron-0.2.19.tgz#e95f7a34dc0debe1bbd0653f9acdacd6548dd17a"
-  integrity sha512-NGo9w6ow2YBzxd24hrKznAL9+ATesYLuATQBP5j7vm+sKGfvdgadsQH54mdMB0fyJJuXZ18mHr9PfeOD2eGzow==
-  dependencies:
-    "@partylayer/core" "^0.11.0"
-
-"@partylayer/adapter-cantor8@^0.2.18":
-  version "0.2.18"
-  resolved "https://registry.yarnpkg.com/@partylayer/adapter-cantor8/-/adapter-cantor8-0.2.18.tgz#01e1c2861db7e2a9f454001238a0f383742fe054"
-  integrity sha512-zvxkzXXvkuGEfNYZdt6umahtqKPK6d74bAYnw0DM7cj5c6c4Wpm+uFlaaxCr/POj3wlP0ce6BMW6gjRP0KsMOg==
-  dependencies:
-    "@partylayer/core" "^0.11.0"
-
-"@partylayer/adapter-console@^0.3.15":
-  version "0.3.15"
-  resolved "https://registry.yarnpkg.com/@partylayer/adapter-console/-/adapter-console-0.3.15.tgz#9a98cbb2892d5a275b3696027c78354a721fb47f"
-  integrity sha512-uEqSlg5CxjNxPmLRoOeSJeat81LVHpkCkr9/VR8ZPnP6nacKld/GBC9IJOx6izMfds4xhNUaMK6u4PE25BYAsg==
-  dependencies:
-    "@console-wallet/dapp-sdk" "^2.1.5"
-    "@partylayer/core" "^0.11.0"
-
-"@partylayer/adapter-loop@^0.4.0":
+"@partylayer/adapter-bron@^0.4.0":
   version "0.4.0"
-  resolved "https://registry.yarnpkg.com/@partylayer/adapter-loop/-/adapter-loop-0.4.0.tgz#9fc8e2545543b4e7597b82dea6cee024ea9b6820"
-  integrity sha512-iG9rXT9jDH9p2ZaBcGorCiQMp245dMvQSfqwOi5UzPV8Iu/jip+U2L2CAi1wGDWwcaRCU+ArAkLQ+5gmcwnuCg==
+  resolved "https://registry.yarnpkg.com/@partylayer/adapter-bron/-/adapter-bron-0.4.0.tgz#547bccbbc73310d85a17bd1b78572f03ee2d9813"
+  integrity sha512-suSkpkLfm3YE9DMkZvUYOaCHc7D+dZNjLNu6HvR0FW/hrKrcT7s+myRSMkuPMxvSKzNEyPK5o2X6TTfVML1XPg==
+  dependencies:
+    "@partylayer/core" "^0.12.1"
+
+"@partylayer/adapter-cantor8@^0.4.0":
+  version "0.4.0"
+  resolved "https://registry.yarnpkg.com/@partylayer/adapter-cantor8/-/adapter-cantor8-0.4.0.tgz#434f55012dc098d04b8eb9e5a59c149def36b8a7"
+  integrity sha512-buuExKHjYGpFoNv27l2byh6drk1JTM63oXHJ22gZvK/8oQaHtPSsVUoZyEc6424g6spDGBxvEdyjeguYms69lQ==
+  dependencies:
+    "@cantor8/wallet-connect-sdk" "^0.4.0"
+    "@partylayer/core" "^0.12.1"
+
+"@partylayer/adapter-console@^0.3.18":
+  version "0.3.18"
+  resolved "https://registry.yarnpkg.com/@partylayer/adapter-console/-/adapter-console-0.3.18.tgz#643ecc58118edd85fe3bb253f17cdda8b19e9e35"
+  integrity sha512-S6/+RRsVHLxH8s/zgAYhO6IERRr9h8JP6ZNFH7SaiQku0ZdSOv5skJEmgSv0dixgIWg0Us91ICWiz51QxCR9Cg==
+  dependencies:
+    "@console-wallet/dapp-sdk" "^2.2.8"
+    "@partylayer/core" "^0.12.1"
+
+"@partylayer/adapter-loop@^0.4.2":
+  version "0.4.2"
+  resolved "https://registry.yarnpkg.com/@partylayer/adapter-loop/-/adapter-loop-0.4.2.tgz#a379e881517f5ce32eac445843a322aacb70247c"
+  integrity sha512-Fy254kZNcJuznFfVxv978BBoIzhWS/e6aWwPZpe9LZmiSxvVIovw82RHDMl/o82aFhP3aEs8NfFEQ+wz5T+CmQ==
   dependencies:
     "@fivenorth/loop-sdk" "^0.13.0"
-    "@partylayer/core" "^0.11.0"
+    "@partylayer/core" "^0.12.1"
 
-"@partylayer/adapter-nightly@^0.2.18":
-  version "0.2.18"
-  resolved "https://registry.yarnpkg.com/@partylayer/adapter-nightly/-/adapter-nightly-0.2.18.tgz#f5fc1b10af508b1b0abb19c9796027b9d9e7c09e"
-  integrity sha512-VESsvNSoldhs3CiGJst0sykeOflsJSu5VoKCzn96oDiNjGreiHxL30uOrn/hsypCWSUmHxT6WOG6jIgCIaxvpQ==
+"@partylayer/adapter-nightly@^0.2.20":
+  version "0.2.20"
+  resolved "https://registry.yarnpkg.com/@partylayer/adapter-nightly/-/adapter-nightly-0.2.20.tgz#378763565c1d18102f9505f7e3f67e1ca2cec4f5"
+  integrity sha512-eiozbs8cWxsWcn8fGVQM6PzfHpHUDL9FMi6OrVj3p006vXCB9bUn6oLjdgdGPl4nLfhcrLuyE11FKgPrHHUbcw==
   dependencies:
-    "@partylayer/core" "^0.11.0"
+    "@partylayer/core" "^0.12.1"
 
-"@partylayer/adapter-send@^1.2.3":
-  version "1.2.3"
-  resolved "https://registry.yarnpkg.com/@partylayer/adapter-send/-/adapter-send-1.2.3.tgz#a213f34501886c054cd2e2efebf733f41edfa059"
-  integrity sha512-YbdoUlzz0ZBTIcgZVpXn9K1OmkTIsxlhFktD0nG9I+gmDBRoPbCjjvtXgGvmden1Lzocd7zEWsn1q5jmuVGbng==
+"@partylayer/adapter-send@^1.2.6":
+  version "1.2.6"
+  resolved "https://registry.yarnpkg.com/@partylayer/adapter-send/-/adapter-send-1.2.6.tgz#0a86aa27983e35bd27352dfd4bd28fe784c945b2"
+  integrity sha512-wIFlLhRcj9HdhkJxo31R847FC+RJCP3mEDLpzK065wJtFuLN6AlD4qPQ9rJ9qBWU534CyKwhJuLARLT4W+NHzQ==
   dependencies:
-    "@partylayer/core" "^0.11.0"
-    "@partylayer/provider" "^0.4.0"
+    "@partylayer/core" "^0.12.1"
+    "@partylayer/provider" "^0.5.1"
 
-"@partylayer/core@^0.11.0":
-  version "0.11.0"
-  resolved "https://registry.yarnpkg.com/@partylayer/core/-/core-0.11.0.tgz#c5d86b96acbe1866f4e79d5b96b190dfdf6aab28"
-  integrity sha512-Z0gSpYUq0fusn9q2m677Ifr5AVaD9Jm/BtwBtMNEgEH2lc/GR3N4WG6L7rFN2Z58yX5u/3eQvNOMrJAuBu4sUg==
+"@partylayer/core@^0.12.1":
+  version "0.12.1"
+  resolved "https://registry.yarnpkg.com/@partylayer/core/-/core-0.12.1.tgz#222bd203fdc1ba2b753817d71eea07438c7a105e"
+  integrity sha512-IsXwB5FWMPbh5iUDAm0dnsOE7P7GpsAPzG6zm4opxd/Gn+ieimiVITAowu6VyGts9m/FIEgWYtN3SwkEtAxUJg==
 
-"@partylayer/provider@^0.4.0":
-  version "0.4.0"
-  resolved "https://registry.yarnpkg.com/@partylayer/provider/-/provider-0.4.0.tgz#1042920e955075be32cdfe6f05ca2cbaa504ac2d"
-  integrity sha512-szWQFE647qrT1kK0QB8VB8NA015AMyjLhzzkkT/0sEkpDU7cKRVcK7uALLcBDyjHUTgXSGbrrDvJeUWd4lTDQw==
+"@partylayer/provider@^0.5.1":
+  version "0.5.1"
+  resolved "https://registry.yarnpkg.com/@partylayer/provider/-/provider-0.5.1.tgz#5bb75eb61c4787cfc59e4f93d8535f70c8a9de5c"
+  integrity sha512-GMEALvu3MdfZ6M4f1PQ6Vo+8271vXHd5tgZBMTdQXlYIVNZVGtBUKBq1ln+nVMZg24pQd2oE2RIszbZKfGSnEA==
   dependencies:
-    "@partylayer/core" "^0.11.0"
+    "@partylayer/core" "^0.12.1"
 
-"@partylayer/react@^2.1.0":
-  version "2.1.0"
-  resolved "https://registry.yarnpkg.com/@partylayer/react/-/react-2.1.0.tgz#e8e7b48249743e0fd71634e804a33473b2daafa0"
-  integrity sha512-fw/bAj9ZduuQc2cbA0Avn/wfGe4x300gk7+wBwDsR794TG22QvTeAFxslO+dQEdAWZdIbhCG8rpDFjQW1Comfw==
+"@partylayer/react@^2.3.3":
+  version "2.3.3"
+  resolved "https://registry.yarnpkg.com/@partylayer/react/-/react-2.3.3.tgz#265004d5eaa1096e276230a8008fb786d9a65947"
+  integrity sha512-VuL1ver2LJzkg0Z0SSnGzBFeTXpksDAE+D+5V4QSR/gcdpeG1qo8hDd1PAdeQqq4vdGAXQ4hsdSrG4vdxc+bfA==
   dependencies:
-    "@partylayer/core" "^0.11.0"
-    "@partylayer/registry-client" "^0.6.0"
-    "@partylayer/sdk" "^0.15.0"
-    "@partylayer/session" "^1.1.4"
+    "@partylayer/core" "^0.12.1"
+    "@partylayer/registry-client" "^0.6.2"
+    "@partylayer/sdk" "^0.18.0"
+    "@partylayer/session" "^1.1.6"
     qrcode "^1.5.4"
 
-"@partylayer/registry-client@^0.6.0":
-  version "0.6.0"
-  resolved "https://registry.yarnpkg.com/@partylayer/registry-client/-/registry-client-0.6.0.tgz#f356ba97bbbcde51a92a4a4aa45c038a340faa7c"
-  integrity sha512-9j7MhAX5XLJvLQW+y25TrpTbZatY2wCwGHkXM84SeOxWUxSFbA7v7Js+KkUCD7jqYLmGw1Qp3PjxfcffYOM1DA==
+"@partylayer/registry-client@^0.6.2":
+  version "0.6.2"
+  resolved "https://registry.yarnpkg.com/@partylayer/registry-client/-/registry-client-0.6.2.tgz#3ea0ed869032fb4534330279f386361a42eda4a6"
+  integrity sha512-8aqCUxLgpDhe7DCexhvtLxFPK51Yq/DQifzzHhdwee7/F2kZIkFw4yhZMLVATGn5MYwQrGCtr7k+A44r+uNoAA==
   dependencies:
-    "@partylayer/core" "^0.11.0"
+    "@partylayer/core" "^0.12.1"
 
-"@partylayer/sdk@^0.15.0":
-  version "0.15.0"
-  resolved "https://registry.yarnpkg.com/@partylayer/sdk/-/sdk-0.15.0.tgz#519d25a4a95e89affe8fb16abe5b93467195e8d2"
-  integrity sha512-2ogAcmBhRAwGRHcWmdLHEu4KULG/xg68POZGCbps5+/OjgdHCoGK6ghNhSuluYcaA5UECtLJaU68CFaIAleSng==
+"@partylayer/sdk@^0.18.0", "@partylayer/sdk@^0.18.1":
+  version "0.18.1"
+  resolved "https://registry.yarnpkg.com/@partylayer/sdk/-/sdk-0.18.1.tgz#41007939738e5a698f76200932828ee66901a174"
+  integrity sha512-Gi5SUtrQp5plgZA6s4YUjsMHgTizmxj2KIJDAvNIQYToHgDuLp8kodFFmRzaxKO6KGwBilxxbTbMuec5EcDLHw==
   dependencies:
-    "@partylayer/adapter-bron" "^0.2.19"
-    "@partylayer/adapter-cantor8" "^0.2.18"
-    "@partylayer/adapter-console" "^0.3.15"
-    "@partylayer/adapter-loop" "^0.4.0"
-    "@partylayer/adapter-nightly" "^0.2.18"
-    "@partylayer/adapter-send" "^1.2.3"
-    "@partylayer/core" "^0.11.0"
-    "@partylayer/provider" "^0.4.0"
-    "@partylayer/registry-client" "^0.6.0"
+    "@partylayer/adapter-bron" "^0.4.0"
+    "@partylayer/adapter-cantor8" "^0.4.0"
+    "@partylayer/adapter-console" "^0.3.18"
+    "@partylayer/adapter-loop" "^0.4.2"
+    "@partylayer/adapter-nightly" "^0.2.20"
+    "@partylayer/adapter-send" "^1.2.6"
+    "@partylayer/core" "^0.12.1"
+    "@partylayer/provider" "^0.5.1"
+    "@partylayer/registry-client" "^0.6.2"
 
-"@partylayer/session@^1.1.4":
-  version "1.1.4"
-  resolved "https://registry.yarnpkg.com/@partylayer/session/-/session-1.1.4.tgz#52654def31efb031b42d575480a494066926d857"
-  integrity sha512-qIZvp4UD+FTmi5BfuhbeKVGnaq0N1DPco7FvKRx8/PcAGdzFT3iMMbNqg8cOxBb/ChZyqyPg5W/v2nDI5tPobQ==
+"@partylayer/session@^1.1.6":
+  version "1.1.6"
+  resolved "https://registry.yarnpkg.com/@partylayer/session/-/session-1.1.6.tgz#4d0496f3055bc503c8a80dbb3d68a242dc013fd8"
+  integrity sha512-InJ6itRzsaDXB+qXnpNSzeMLLFKQu8YLBueq0oSqRhMfHFTWsu1zmXSnbQlYjBVZE2P4cI18N7mJReVdtpayIg==
   dependencies:
-    "@partylayer/core" "^0.11.0"
+    "@partylayer/core" "^0.12.1"
 
 "@pinojs/redact@^0.4.0":
   version "0.4.0"
