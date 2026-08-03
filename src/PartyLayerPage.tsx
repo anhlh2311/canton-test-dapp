@@ -25,7 +25,11 @@ import {
 } from '@partylayer/sdk';
 import './App.css';
 import { ConnectionModeNav } from './ConnectionModeNav';
-import { ConsoleDamlAdapter } from './console-daml-adapter';
+import {
+  ConsoleDamlAdapter,
+  isConsoleWalletId,
+  queryConsoleCoinsBalance,
+} from './console-daml-adapter';
 
 /** Expand PartyLayer / wallet errors so toast/UI show cause + details, not only "Unknown error". */
 function formatPartyLayerError(err: unknown): string {
@@ -306,6 +310,7 @@ function PartyLayerDemo({
     raw: string;
   } | null>(null);
   const [holdingsError, setHoldingsError] = useState<string | null>(null);
+  const [holdingsLoading, setHoldingsLoading] = useState(false);
   const [pingState, setPingState] = useState<{
     receipt?: TxReceipt;
     error?: string;
@@ -348,6 +353,7 @@ function PartyLayerDemo({
       setPingState({ status: 'idle' });
       setHoldings(null);
       setHoldingsError(null);
+      setHoldingsLoading(false);
       return;
     }
     let cancelled = false;
@@ -399,29 +405,45 @@ function PartyLayerDemo({
   }
 
   /**
-   * Ledger query per PartyLayer wallet-balances docs + Loop capability notes:
-   * 1) Full wallets: GET ledger-end → POST active-contracts (Holding interface + eventFormat)
+   * Ledger query per PartyLayer wallet-balances docs + Console AUTH notes:
+   * 0) Console: getCoinsBalance (token-standard; no raw ledger-api proxy)
+   * 1) Full wallets: GET ledger-end → POST active-contracts (AUTH for Console)
    * 2) Loop / limited: POST /v2/state/acs with package-prefixed interface/template filter
    */
   async function handleQueryHoldings() {
     if (!party) return;
     setHoldings(null);
     setHoldingsError(null);
+    setHoldingsLoading(true);
 
     const session = await client.getActiveSession();
     const sessionCaps = session?.capabilitiesSnapshot ?? caps;
+    const walletId = String(session?.walletId ?? sessionMeta.walletId ?? '');
+    const pathErrors: string[] = [];
+
+    try {
+    // Path 0 — Console native balances (avoids /api/v1/ledger-api 403 when proxy auth fails)
+    if (isConsoleWalletId(walletId)) {
+      try {
+        const coins = await queryConsoleCoinsBalance();
+        setHoldings(coins);
+        return;
+      } catch (e) {
+        pathErrors.push(`Path 0 (Console getCoinsBalance): ${formatPartyLayerError(e)}`);
+      }
+    }
+
     if (!sessionCaps.includes('ledgerApi')) {
       setHoldingsError(
-        `Connected wallet (${sessionMeta.walletId ?? 'unknown'}) has no ledgerApi capability. ` +
-          `Capabilities: [${sessionCaps.join(', ') || 'none'}]. ` +
-          'Console needs ConsoleAdapter / registry config.ledgerApi; Cantor8 / Walley do not expose ledgerApi.',
+        (pathErrors.length ? pathErrors.join('\n\n') + '\n\n' : '') +
+          `Connected wallet (${walletId || 'unknown'}) has no ledgerApi capability. ` +
+          `Capabilities: [${sessionCaps.join(', ') || 'none'}].`,
       );
       return;
     }
 
-    const pathErrors: string[] = [];
-
-    // Path A — docs (Console / Nightly / Bron / WC): ledger-end + Holding interface
+    // Path A — AUTH'd active-contracts (Console docs: POST /v2/state/active-contracts AUTH=Yes)
+    // ConsoleDamlAdapter.ledgerApi attaches JWT via ledgerAuth before proxying.
     try {
       const end = await ledgerApi({
         requestMethod: 'GET',
@@ -463,7 +485,7 @@ function PartyLayerDemo({
             if (summary.contractCount > 0 || entries.length >= 0) {
               setHoldings({
                 ...summary,
-                path: 'GET /v2/state/ledger-end → POST /v2/state/active-contracts (Holding)',
+                path: 'GET /v2/state/ledger-end → POST /v2/state/active-contracts (Holding, AUTH)',
                 raw,
               });
               return;
@@ -472,7 +494,7 @@ function PartyLayerDemo({
         }
       }
     } catch (e) {
-      pathErrors.push(`Path A (ledger-end + active-contracts): ${formatPartyLayerError(e)}`);
+      pathErrors.push(`Path A (ledger-end + active-contracts AUTH): ${formatPartyLayerError(e)}`);
       // Fall through to Loop-compatible ACS (ledger-end unsupported on Loop).
     }
 
@@ -548,6 +570,9 @@ function PartyLayerDemo({
       setHoldingsError(formatPartyLayerError(ledgerError));
     } else {
       setHoldingsError('All ACS query paths returned empty / no response.');
+    }
+    } finally {
+      setHoldingsLoading(false);
     }
   }
 
@@ -838,24 +863,34 @@ function PartyLayerDemo({
             <a href="https://partylayer.xyz/docs/wallet-balances" target="_blank" rel="noreferrer">
               wallet balances guide
             </a>
-            . Full wallets: <code>ledger-end</code> + Holding interface. Loop (limited):{' '}
-            <code>POST /v2/state/acs</code> only (no <code>/v2/version</code>).
+            . Console: tries <code>getCoinsBalance</code> first, then AUTH&apos;d{' '}
+            <code>POST /v2/state/active-contracts</code> (JWT via <code>ledgerAuth</code>). Other
+            wallets: <code>ledger-end</code> + Holding interface; Loop falls back to{' '}
+            <code>POST /v2/state/acs</code>.
           </p>
-          {!canLedgerApi && caps.length > 0 && (
+          {!canLedgerApi && caps.length > 0 && !isConsoleWalletId(sessionMeta.walletId) && (
             <p className="hint">
               Connected wallet (<code>{sessionMeta.walletId ?? 'unknown'}</code>) has no{' '}
               <code>ledgerApi</code> capability. Caps: <code>{caps.join(', ') || 'none'}</code>.
-              Expected for Cantor8 / Walley; Console should advertise it when{' '}
-              <code>ConsoleAdapter</code> is registered (this page does).
+              Expected for Cantor8 / Walley.
             </p>
           )}
           <div className="button-row">
             <button
               onClick={handleQueryHoldings}
-              disabled={ledgerLoading || !party || !canLedgerApi}
-              title={!canLedgerApi ? 'Wallet lacks ledgerApi capability' : ''}
+              disabled={
+                holdingsLoading ||
+                ledgerLoading ||
+                !party ||
+                (!canLedgerApi && !isConsoleWalletId(sessionMeta.walletId))
+              }
+              title={
+                !canLedgerApi && !isConsoleWalletId(sessionMeta.walletId)
+                  ? 'Wallet lacks ledgerApi capability'
+                  : ''
+              }
             >
-              {ledgerLoading ? 'Querying…' : 'Query Holdings / Balance'}
+              {holdingsLoading || ledgerLoading ? 'Querying…' : 'Query Holdings / Balance'}
             </button>
           </div>
           {(holdingsError || ledgerError) && (
