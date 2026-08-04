@@ -195,7 +195,7 @@ export function Cantor8Page({
                         <span className="account-label">{h.instrumentId}:</span>
                         <span className="account-value">
                           {h.balance}
-                          {h.balanceUsd ? ` (≈ $${h.balanceUsd})` : ''}
+                          {h.balanceUsd != null ? ` (≈ $${h.balanceUsd})` : ''}
                         </span>
                       </div>
                     ))

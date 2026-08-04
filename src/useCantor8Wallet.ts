@@ -73,6 +73,13 @@ export function useCantor8Wallet(
   const providerRef = useRef<C8WalletProvider | null>(null);
   const unsubsRef = useRef<Array<() => boolean>>([]);
   const selectedInstrumentRef = useRef<string | undefined>(undefined);
+  // Set right before loadInstrumentsAndAccounts programmatically changes the
+  // selected instrument, so the instrument-change effect below skips the
+  // redundant getAccounts call for a fetch it already performed.
+  const skipNextInstrumentEffectRef = useRef(false);
+  // Monotonic id guarding against out-of-order getAccounts responses when the
+  // user switches instruments in quick succession.
+  const instrumentAccountsRequestIdRef = useRef(0);
 
   useEffect(() => {
     selectedInstrumentRef.current = selectedInstrumentId;
@@ -105,6 +112,7 @@ export function useCantor8Wallet(
     setInstruments(list);
     const instrumentId = selectedInstrumentRef.current ?? list[0]?.instrumentId;
     if (instrumentId && selectedInstrumentRef.current !== instrumentId) {
+      skipNextInstrumentEffectRef.current = true;
       setSelectedInstrumentId(instrumentId);
       selectedInstrumentRef.current = instrumentId;
     }
@@ -260,7 +268,9 @@ export function useCantor8Wallet(
     setError(undefined);
     try {
       const c8 = providerRef.current;
-      if (!c8) throw { code: 'NOT_CONNECTED', message: 'not connected' };
+      if (!c8) {
+        throw Object.assign(new Error('not connected'), { code: 'NOT_CONNECTED' });
+      }
       await loadInstrumentsAndAccounts(c8);
     } catch (e) {
       setError(describeCantor8Error(e));
@@ -268,17 +278,29 @@ export function useCantor8Wallet(
   }, [loadInstrumentsAndAccounts]);
 
   // When instrument selection changes while connected, reload accounts.
+  // Skipped once right after loadInstrumentsAndAccounts programmatically
+  // sets selectedInstrumentId (initial connect / reconnect), since that
+  // function already fetched accounts for this exact instrument.
   useEffect(() => {
     if (status !== 'connected' || !selectedInstrumentId || !providerRef.current) return;
+    if (skipNextInstrumentEffectRef.current) {
+      skipNextInstrumentEffectRef.current = false;
+      return;
+    }
+    const requestId = ++instrumentAccountsRequestIdRef.current;
     void providerRef.current
       .getAccounts(selectedInstrumentId)
       .then(({ accounts: accts }) => {
+        if (instrumentAccountsRequestIdRef.current !== requestId) return; // stale response
         setAccounts(accts);
         setSelectedPartyId((prev) =>
           accts.some((a) => a.partyId === prev) ? prev : accts[0]?.partyId,
         );
       })
-      .catch((e) => setError(describeCantor8Error(e)));
+      .catch((e) => {
+        if (instrumentAccountsRequestIdRef.current !== requestId) return; // stale response
+        setError(describeCantor8Error(e));
+      });
   }, [selectedInstrumentId, status]);
 
   const send = useCallback(
