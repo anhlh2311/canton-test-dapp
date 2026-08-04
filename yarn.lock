@@ -361,7 +361,7 @@
     "@canton-network/core-wallet-ui-components" "^1.1.0"
     qrcode "^1.5.4"
 
-"@cantor8/wallet-connect-sdk@^0.4.0":
+"@cantor8/wallet-connect-sdk@0.4.0", "@cantor8/wallet-connect-sdk@^0.4.0":
   version "0.4.0"
   resolved "https://registry.yarnpkg.com/@cantor8/wallet-connect-sdk/-/wallet-connect-sdk-0.4.0.tgz#bfb0fa5b197202cfacf4b1368abcf0cda87c5eed"
   integrity sha512-BeSXu4U0S2KfPPjfe0Q/QLpjdOCzLaWOEQK/OBy6qz/g3K32NpSSjNFjgS5GImCc9TQN8k9QjvNYKBWB+RfPRQ==

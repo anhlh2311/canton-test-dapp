@@ -1,4 +1,4 @@
-export type ConnectionMode = 'standard' | 'rocky' | 'partylayer' | 'console';
+export type ConnectionMode = 'standard' | 'rocky' | 'partylayer' | 'console' | 'cantor8';
 
 export function ConnectionModeNav({
   active,
@@ -6,12 +6,14 @@ export function ConnectionModeNav({
   onRocky,
   onPartyLayer,
   onConsole,
+  onCantor8,
 }: {
   active: ConnectionMode;
   onStandard: () => void;
   onRocky: () => void;
   onPartyLayer: () => void;
   onConsole: () => void;
+  onCantor8: () => void;
 }) {
   return (
     <div className="conn-mode-nav">
@@ -43,6 +45,13 @@ export function ConnectionModeNav({
         disabled={active === 'console'}
       >
         Console Wallet
+      </button>
+      <button
+        className={`conn-mode-btn ${active === 'cantor8' ? 'active' : ''}`}
+        onClick={onCantor8}
+        disabled={active === 'cantor8'}
+      >
+        Cantor8
       </button>
     </div>
   );

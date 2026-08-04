@@ -66,10 +66,12 @@ export function ConsolePage({
   onExit,
   onOpenRocky,
   onOpenPartyLayer,
+  onOpenCantor8,
 }: {
   onExit: () => void;
   onOpenRocky: () => void;
   onOpenPartyLayer: () => void;
+  onOpenCantor8: () => void;
 }) {
   const cw = useConsoleWallet();
   const connected = cw.status === 'connected';
@@ -123,6 +125,7 @@ export function ConsolePage({
         onRocky={onOpenRocky}
         onPartyLayer={onOpenPartyLayer}
         onConsole={() => {}}
+        onCantor8={onOpenCantor8}
       />
 
       <StepCard

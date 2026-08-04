@@ -28,10 +28,12 @@ export function RockyPage({
   onExit,
   onOpenPartyLayer,
   onOpenConsole,
+  onOpenCantor8,
 }: {
   onExit: () => void;
   onOpenPartyLayer: () => void;
   onOpenConsole: () => void;
+  onOpenCantor8: () => void;
 }) {
   const rocky = useRockyWallet('Canton Test dApp');
   const connected = rocky.status === 'connected';
@@ -109,6 +111,7 @@ export function RockyPage({
         onRocky={() => {}}
         onPartyLayer={onOpenPartyLayer}
         onConsole={onOpenConsole}
+        onCantor8={onOpenCantor8}
       />
 
       {/* Connection */}

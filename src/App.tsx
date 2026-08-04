@@ -7,6 +7,7 @@ import { CantonWcAdapter } from './walletconnect-canton-adapter';
 import { RockyPage } from './RockyPage';
 import { PartyLayerPage } from './PartyLayerPage';
 import { ConsolePage } from './ConsolePage';
+import { Cantor8Page } from './Cantor8Page';
 import { ConnectionModeNav } from './ConnectionModeNav';
 
 const WC_PROJECT_ID = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string | undefined;
@@ -374,10 +375,12 @@ function CantonDapp({
   onOpenRocky,
   onOpenPartyLayer,
   onOpenConsole,
+  onOpenCantor8,
 }: {
   onOpenRocky: () => void;
   onOpenPartyLayer: () => void;
   onOpenConsole: () => void;
+  onOpenCantor8: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<TabId>('accounts');
   const [extensionDetected, setExtensionDetected] = useState<boolean | null>(null);
@@ -1386,6 +1389,7 @@ function CantonDapp({
         onRocky={onOpenRocky}
         onPartyLayer={onOpenPartyLayer}
         onConsole={onOpenConsole}
+        onCantor8={onOpenCantor8}
       />
 
       {/* Extension Detection */}
@@ -1982,6 +1986,7 @@ function App() {
         onExit={() => navigate('/')}
         onOpenPartyLayer={() => navigate('/partylayer/')}
         onOpenConsole={() => navigate('/console/')}
+        onOpenCantor8={() => navigate('/cantor8/')}
       />
     );
   }
@@ -1991,6 +1996,7 @@ function App() {
         onExit={() => navigate('/')}
         onOpenRocky={() => navigate('/rocky/')}
         onOpenConsole={() => navigate('/console/')}
+        onOpenCantor8={() => navigate('/cantor8/')}
       />
     );
   }
@@ -2000,6 +2006,17 @@ function App() {
         onExit={() => navigate('/')}
         onOpenRocky={() => navigate('/rocky/')}
         onOpenPartyLayer={() => navigate('/partylayer/')}
+        onOpenCantor8={() => navigate('/cantor8/')}
+      />
+    );
+  }
+  if (/^\/cantor8(\/|$)/i.test(path)) {
+    return (
+      <Cantor8Page
+        onExit={() => navigate('/')}
+        onOpenRocky={() => navigate('/rocky/')}
+        onOpenPartyLayer={() => navigate('/partylayer/')}
+        onOpenConsole={() => navigate('/console/')}
       />
     );
   }
@@ -2008,6 +2025,7 @@ function App() {
       onOpenRocky={() => navigate('/rocky/')}
       onOpenPartyLayer={() => navigate('/partylayer/')}
       onOpenConsole={() => navigate('/console/')}
+      onOpenCantor8={() => navigate('/cantor8/')}
     />
   );
 }
