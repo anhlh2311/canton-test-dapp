@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test": "node --test src/rockyAssets.test.mjs",
+    "test": "node --test src/rockyAssets.test.mjs src/cantor8Helpers.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
