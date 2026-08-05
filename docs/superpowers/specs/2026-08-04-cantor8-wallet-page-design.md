@@ -18,7 +18,7 @@ This page is **not** PartyLayer’s Cantor8 adapter (`@partylayer/adapter-cantor
 | Topic | Choice |
 |-------|--------|
 | Phase A scope | Connect / disconnect, instruments + accounts, `send`, tx status, event log |
-| Phase B (later) | Add `signAndExecute` on the same page once Phase A is solid |
+| Phase B | `signAndExecute` card on the same page (implemented) |
 | Package install | Public npm `@cantor8/wallet-connect-sdk` (not `.tgz`) |
 | Pin | `0.4.0` |
 | Network | Default `devnet` with UI toggle for `mainnet` |
@@ -127,12 +127,12 @@ Reuse existing `App.css` card / status / form patterns from Rocky.
 5. **Tx status** — poll / event-driven status for the latest `txId`
 6. **Event log** — append-only feed: `connected`, `disconnected`, `accountChanged`, `txInitiated`, `txChanged`, `operationCanceled`
 
-## Phase B (deferred)
+## Phase B (signAndExecute)
 
-Same page, new card:
+Same page, **Sign & Execute** card:
 
 - **Sign & execute** — `note`, `partyId`, `commandId` (UUID), `commandsJson`, `disclosedContracts` → `signAndExecute()`
-- Ship only after Phase A connect → transfer → status is verified on `devnet`
+- Ping example prefill available; wallet backend may still reject non-transfer templates
 
 ## Error handling
 

@@ -43,35 +43,24 @@ function formatPartyLayerError(err: unknown): string {
       }
     }
     if (err.cause !== undefined) {
-      if (err.cause instanceof Error) {
-        parts.push(`cause: ${err.cause.name}: ${err.cause.message}`);
-      } else {
-        try {
-          parts.push(`cause: ${JSON.stringify(err.cause)}`);
-        } catch {
-          parts.push(`cause: ${String(err.cause)}`);
-        }
-      }
+      parts.push(`cause: ${formatPartyLayerError(err.cause)}`);
     }
     return parts.join('\n');
   }
-  if (err instanceof Error) {
-    const cause =
-      'cause' in err && err.cause !== undefined
-        ? err.cause instanceof Error
-          ? `\ncause: ${err.cause.name}: ${err.cause.message}`
-          : `\ncause: ${(() => {
-              try {
-                return JSON.stringify(err.cause);
-              } catch {
-                return String(err.cause);
-              }
-            })()}`
-        : '';
-    return `${err.message}${cause}`;
-  }
-  if (err && typeof err === 'object') {
+  // Cantor8 RpcError: { code, message, data? } — often the PartyLayer cause
+  if (err && typeof err === 'object' && !(err instanceof Error)) {
     const o = err as Record<string, unknown>;
+    if (typeof o.code === 'string' && typeof o.message === 'string') {
+      const parts = [`[${o.code}] ${o.message}`];
+      if (o.data !== undefined) {
+        try {
+          parts.push(`data: ${JSON.stringify(o.data)}`);
+        } catch {
+          parts.push(`data: ${String(o.data)}`);
+        }
+      }
+      return parts.join('\n');
+    }
     if (typeof o.message === 'string') {
       try {
         return `${o.message}\n${JSON.stringify(o, null, 2)}`;
@@ -84,6 +73,13 @@ function formatPartyLayerError(err: unknown): string {
     } catch {
       return String(err);
     }
+  }
+  if (err instanceof Error) {
+    const cause =
+      'cause' in err && err.cause !== undefined
+        ? `\ncause: ${formatPartyLayerError(err.cause)}`
+        : '';
+    return `${err.message}${cause}`;
   }
   return String(err);
 }
@@ -277,8 +273,27 @@ function createPingLoopSignedTx(party: string) {
   };
 }
 
+/**
+ * Cantor8 `signAndExecute` input (passthrough as signedTx).
+ * Requires commandsJson as a JSON string, not a commands array.
+ */
+function createPingCantor8SignedTx(party: string) {
+  const commandId = `ping-${Date.now()}`;
+  return {
+    note: 'Create Ping Contract (PartyLayer test dApp)',
+    partyId: party,
+    commandId,
+    commandsJson: JSON.stringify(createPingCommands(party)),
+    disclosedContracts: '',
+  };
+}
+
 function isLoopWallet(walletId: string | undefined): boolean {
   return (walletId ?? '').toLowerCase().includes('loop');
+}
+
+function isCantor8Wallet(walletId: string | undefined): boolean {
+  return (walletId ?? '').toLowerCase().includes('cantor8');
 }
 
 function PartyLayerDemo({
@@ -579,11 +594,12 @@ function PartyLayerDemo({
   async function handleCreatePing() {
     if (!party) return;
     setPingState({ status: 'pending' });
+    let walletId = String(sessionMeta.walletId ?? '');
 
     try {
       const session = await client.getActiveSession();
       const sessionCaps = session?.capabilitiesSnapshot ?? caps;
-      const walletId = String(session?.walletId ?? sessionMeta.walletId ?? '');
+      walletId = String(session?.walletId ?? sessionMeta.walletId ?? '');
 
       if (!sessionCaps.includes('submitTransaction')) {
         setPingState({
@@ -591,23 +607,36 @@ function PartyLayerDemo({
           error:
             `Connected wallet (${walletId || 'unknown'}) lacks submitTransaction. ` +
             `Capabilities: [${sessionCaps.join(', ') || 'none'}]. ` +
-            'Cantor8 / Bron need signTransaction instead.',
+            'Bron is sign-only (use signTransaction + your own submit).',
         });
         return;
       }
 
       // Call the client directly so errors throw (useSubmitTransaction swallows
       // and returns null, which races with React state and loses detail).
-      const signedTx = isLoopWallet(walletId)
-        ? createPingLoopSignedTx(party)
-        : createPingPreparePayload(party);
+      let signedTx: unknown;
+      if (isLoopWallet(walletId)) {
+        signedTx = createPingLoopSignedTx(party);
+      } else if (isCantor8Wallet(walletId)) {
+        signedTx = createPingCantor8SignedTx(party);
+      } else {
+        signedTx = createPingPreparePayload(party);
+      }
 
       const receipt = await client.submitTransaction({ signedTx });
       setPingState({ status: 'success', receipt });
     } catch (e) {
+      let msg = formatPartyLayerError(e);
+      if (isCantor8Wallet(walletId)) {
+        msg +=
+          '\n\nPartyLayer/Cantor8: submitTransaction maps to the adapter’s fused submit. ' +
+          'Cantor8 reports no signMessage/ledgerApi. A TRANSPORT_ERROR / “Failed to execute transfer” ' +
+          'usually means the wallet backend rejected the command (e.g. Ping template not supported), ' +
+          'not a missing PartyLayer API.';
+      }
       setPingState({
         status: 'error',
-        error: formatPartyLayerError(e),
+        error: msg,
       });
     }
   }
@@ -815,12 +844,17 @@ function PartyLayerDemo({
         <section className="card">
           <h2>Sign Message</h2>
           <p className="hint">
-            Via <code>useSignMessage()</code> — supported on all built-in wallets in the{' '}
-            <a href="https://partylayer.xyz/docs/wallets#capability-matrix" target="_blank" rel="noreferrer">
-              capability matrix
-            </a>
-            .
+            Via <code>useSignMessage()</code>. Enabled when the session{' '}
+            <code>capabilitiesSnapshot</code> includes <code>signMessage</code> (PartyLayer
+            capability gate). Cantor8&apos;s PartyLayer adapter does not advertise it.
           </p>
+          {!canSignMessage && caps.length > 0 && (
+            <p className="hint">
+              Connected wallet (<code>{sessionMeta.walletId ?? 'unknown'}</code>) has no{' '}
+              <code>signMessage</code> capability. Caps:{' '}
+              <code>{caps.join(', ') || 'none'}</code>.
+            </p>
+          )}
           <textarea
             className="sign-input"
             rows={3}
@@ -833,6 +867,7 @@ function PartyLayerDemo({
             <button
               onClick={handleSign}
               disabled={isSigning || !signInput.trim() || !canSignMessage}
+              title={!canSignMessage ? 'Wallet lacks signMessage capability' : ''}
             >
               {isSigning ? 'Signing…' : 'Sign Message'}
             </button>
@@ -872,7 +907,9 @@ function PartyLayerDemo({
             <p className="hint">
               Connected wallet (<code>{sessionMeta.walletId ?? 'unknown'}</code>) has no{' '}
               <code>ledgerApi</code> capability. Caps: <code>{caps.join(', ') || 'none'}</code>.
-              Expected for Cantor8 / Walley.
+              {isCantor8Wallet(sessionMeta.walletId)
+                ? ' Expected for Cantor8 (PartyLayer adapter does not expose ledgerApi).'
+                : ' Also expected for Walley.'}
             </p>
           )}
           <div className="button-row">
@@ -944,12 +981,19 @@ function PartyLayerDemo({
         <section className="card">
           <h2>Submit Transaction</h2>
           <p className="hint">
-            Uses <code>client.submitTransaction(&#123; signedTx &#125;)</code> (fused sign+submit).
-            Loop gets a proprietary payload; Send / Console / Nightly get a flat CIP-0103
-            ExecuteRequest. <code>SendAdapter</code> + <code>ConsoleDamlAdapter</code> are
-            registered so <code>signedTx</code> is not double-wrapped. Template:{' '}
-            <code>{PING_TEMPLATE}</code>.
+            Uses <code>client.submitTransaction(&#123; signedTx &#125;)</code> (PartyLayer fused
+            submit). Loop / Cantor8 / CIP-0103 wallets each get the payload shape their PartyLayer
+            adapter expects. Template: <code>{PING_TEMPLATE}</code>.
           </p>
+          {isCantor8Wallet(sessionMeta.walletId) && (
+            <p className="hint">
+              Cantor8 via PartyLayer: only <code>submitTransaction</code> (+ connect / events). There
+              is no PartyLayer transfer API for Cantor8. Creating Ping will call{' '}
+              <code>submitTransaction</code>, but Cantor8&apos;s popup often rejects{' '}
+              <code>Canton.Internal.Ping</code> with <code>TRANSPORT_ERROR</code> / “Failed to execute
+              transfer” — that is a wallet-backend rejection, not a missing PartyLayer method.
+            </p>
+          )}
           {!canSubmit && caps.length > 0 && (
             <p className="hint">
               Connected wallet (<code>{sessionMeta.walletId ?? 'unknown'}</code>) has no{' '}
@@ -960,12 +1004,17 @@ function PartyLayerDemo({
             <button
               onClick={handleCreatePing}
               disabled={pingState.status === 'pending' || !party || !canSubmit}
-              title={!canSubmit ? 'Wallet lacks submitTransaction capability' : ''}
+              title={
+                !canSubmit
+                  ? 'Wallet lacks submitTransaction capability'
+                  : isCantor8Wallet(sessionMeta.walletId)
+                    ? 'May fail: Cantor8 often rejects Canton.Internal.Ping'
+                    : ''
+              }
             >
               {pingState.status === 'pending' ? 'Submitting…' : 'Create Ping Contract'}
             </button>
           </div>
-
           <TransactionToast
             status={toastStatus}
             error={toastStatus === 'error' ? new Error(pingState.error ?? 'unknown error') : null}

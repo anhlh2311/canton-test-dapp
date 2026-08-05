@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import './App.css';
 import { useCantor8Wallet, type Cantor8Status } from './useCantor8Wallet';
 import { ConnectionModeNav } from './ConnectionModeNav';
@@ -10,10 +10,36 @@ const STATUS_LABEL: Record<Cantor8Status, string> = {
   error: 'error',
 };
 
+/** Builtin Ping — same template PartyLayer / Console use for smoke tests. */
+const PING_TEMPLATE = '#canton-builtin-admin-workflow-ping:Canton.Internal.Ping:Ping';
+
 function statusDot(status: Cantor8Status): 'green' | 'yellow' | 'red' {
   if (status === 'connected') return 'green';
   if (status === 'error') return 'red';
   return 'yellow';
+}
+
+function newCommandId(): string {
+  return crypto.randomUUID();
+}
+
+function buildPingCommandsJson(partyId: string): string {
+  return JSON.stringify(
+    [
+      {
+        CreateCommand: {
+          templateId: PING_TEMPLATE,
+          createArguments: {
+            id: `ping-cantor8-${Date.now()}`,
+            initiator: partyId,
+            responder: partyId,
+          },
+        },
+      },
+    ],
+    null,
+    2,
+  );
 }
 
 export function Cantor8Page({
@@ -39,7 +65,25 @@ export function Cantor8Page({
     error?: string;
   }>({ loading: false });
 
+  const [sxNote, setSxNote] = useState('Create Ping Contract (Cantor8 test dApp)');
+  const [sxPartyId, setSxPartyId] = useState('');
+  const [sxCommandId, setSxCommandId] = useState(() => newCommandId());
+  const [sxCommandsJson, setSxCommandsJson] = useState('[]');
+  const [sxDisclosed, setSxDisclosed] = useState('');
+  const [sxState, setSxState] = useState<{
+    loading: boolean;
+    result?: string;
+    error?: string;
+  }>({ loading: false });
+
   const selectedAccount = c8.accounts.find((a) => a.partyId === c8.selectedPartyId);
+
+  useEffect(() => {
+    if (c8.selectedPartyId && !sxPartyId) {
+      setSxPartyId(c8.selectedPartyId);
+      setSxCommandsJson(buildPingCommandsJson(c8.selectedPartyId));
+    }
+  }, [c8.selectedPartyId, sxPartyId]);
 
   async function handleTransfer() {
     setTransferState({ loading: true });
@@ -55,6 +99,33 @@ export function Cantor8Page({
       setTxMemo('');
     } catch (e) {
       setTransferState({ loading: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  function loadPingExample() {
+    const party = sxPartyId.trim() || c8.selectedPartyId || '';
+    if (party && !sxPartyId.trim()) setSxPartyId(party);
+    setSxNote('Create Ping Contract (Cantor8 test dApp)');
+    setSxCommandId(newCommandId());
+    setSxCommandsJson(buildPingCommandsJson(party || 'PARTY_ID'));
+    setSxDisclosed('');
+    setSxState({ loading: false });
+  }
+
+  async function handleSignAndExecute() {
+    setSxState({ loading: true });
+    try {
+      await c8.signAndExecute({
+        note: sxNote,
+        partyId: sxPartyId,
+        commandId: sxCommandId,
+        commandsJson: sxCommandsJson,
+        disclosedContracts: sxDisclosed,
+      });
+      setSxState({ loading: false, result: `Submitted — commandId: ${sxCommandId}` });
+      setSxCommandId(newCommandId());
+    } catch (e) {
+      setSxState({ loading: false, error: e instanceof Error ? e.message : String(e) });
     }
   }
 
@@ -292,6 +363,106 @@ export function Cantor8Page({
                 Refresh Tx Status
               </button>
             </div>
+          </section>
+
+          {/* Sign & execute (Phase B) */}
+          <section className="card">
+            <h2>Sign &amp; Execute</h2>
+            <p className="hint">
+              Calls <code>C8WalletProvider.signAndExecute</code> — opens the wallet popup for an
+              arbitrary DAML command. Officially supported surface is still connect / balances /
+              transfer; custom templates (including Ping) may be rejected by the wallet backend.
+              Disclosed contracts are JSON strings of{' '}
+              <code>{'{ templateId, contractId, createdEventBlob, synchronizerId }'}</code> arrays —
+              fetch blobs via ledger ACS yourself; the Wallet SDK does not return Allocation /
+              LockedHolding / TradeProposal.
+            </p>
+            <div className="rocky-transfer-form">
+              <label>
+                Note
+                <input
+                  className="sign-input"
+                  value={sxNote}
+                  onChange={(e) => setSxNote(e.target.value)}
+                  placeholder="Shown in the wallet UI"
+                />
+              </label>
+              <label>
+                partyId
+                <input
+                  className="sign-input"
+                  value={sxPartyId}
+                  onChange={(e) => setSxPartyId(e.target.value)}
+                  placeholder="submitting party"
+                />
+              </label>
+              <label>
+                commandId
+                <input
+                  className="sign-input"
+                  value={sxCommandId}
+                  onChange={(e) => setSxCommandId(e.target.value)}
+                  placeholder="UUID"
+                />
+              </label>
+              <label>
+                commandsJson
+                <textarea
+                  className="sign-input"
+                  rows={10}
+                  value={sxCommandsJson}
+                  onChange={(e) => setSxCommandsJson(e.target.value)}
+                  spellCheck={false}
+                />
+              </label>
+              <label>
+                disclosedContracts (optional JSON string)
+                <textarea
+                  className="sign-input"
+                  rows={4}
+                  value={sxDisclosed}
+                  onChange={(e) => setSxDisclosed(e.target.value)}
+                  placeholder='[{"templateId":"...","contractId":"...","createdEventBlob":"...","synchronizerId":"..."}]'
+                  spellCheck={false}
+                />
+              </label>
+            </div>
+            <div className="button-row">
+              <button type="button" onClick={loadPingExample}>
+                Load Ping example
+              </button>
+              <button
+                type="button"
+                onClick={() => setSxCommandId(newCommandId())}
+                title="Generate a new commandId"
+              >
+                New commandId
+              </button>
+              <button
+                onClick={handleSignAndExecute}
+                disabled={
+                  sxState.loading ||
+                  !sxNote.trim() ||
+                  !sxPartyId.trim() ||
+                  !sxCommandId.trim() ||
+                  !sxCommandsJson.trim()
+                }
+              >
+                {sxState.loading ? 'Signing…' : 'Sign & Execute'}
+              </button>
+            </div>
+            {sxState.result && (
+              <div className="status-row">
+                <span className="status-dot green" />
+                <span>{sxState.result}</span>
+              </div>
+            )}
+            {sxState.error && (
+              <div className="status-row">
+                <span className="status-dot red" />
+                <span>{sxState.error}</span>
+              </div>
+            )}
           </section>
         </>
       )}

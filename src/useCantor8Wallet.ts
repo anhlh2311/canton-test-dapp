@@ -43,6 +43,13 @@ export interface UseCantor8Wallet {
     amount: string;
     memo?: string;
   }) => Promise<{ txId: string }>;
+  signAndExecute: (input: {
+    note: string;
+    partyId: string;
+    commandId: string;
+    commandsJson: string;
+    disclosedContracts?: string;
+  }) => Promise<void>;
   refreshTxStatus: () => Promise<void>;
   clearEvents: () => void;
 }
@@ -337,6 +344,59 @@ export function useCantor8Wallet(
     [pushEvent, selectedInstrumentId, selectedPartyId, status],
   );
 
+  const signAndExecute = useCallback(
+    async (input: {
+      note: string;
+      partyId: string;
+      commandId: string;
+      commandsJson: string;
+      disclosedContracts?: string;
+    }) => {
+      const c8 = providerRef.current;
+      if (!c8 || status !== 'connected') {
+        throw Object.assign(new Error('Connect the wallet first.'), { code: 'NOT_CONNECTED' });
+      }
+      const note = input.note.trim();
+      const partyId = input.partyId.trim();
+      const commandId = input.commandId.trim();
+      const commandsJson = input.commandsJson.trim();
+      if (!note) throw new Error('Note is required.');
+      if (!partyId) throw new Error('partyId is required.');
+      if (!commandId) throw new Error('commandId is required.');
+      if (!commandsJson) throw new Error('commandsJson is required.');
+      try {
+        JSON.parse(commandsJson);
+      } catch {
+        throw new Error('commandsJson must be valid JSON.');
+      }
+      const disclosedContracts = input.disclosedContracts?.trim() ?? '';
+      if (disclosedContracts) {
+        try {
+          JSON.parse(disclosedContracts);
+        } catch {
+          throw new Error('disclosedContracts must be valid JSON (or empty).');
+        }
+      }
+      try {
+        await c8.signAndExecute({
+          note,
+          partyId,
+          commandId,
+          commandsJson,
+          disclosedContracts,
+        });
+        pushEvent('signAndExecute', `Submitted commandId ${commandId}`);
+      } catch (e) {
+        const msg = describeCantor8Error(e);
+        setError(msg);
+        throw Object.assign(new Error(msg), {
+          code: e && typeof e === 'object' && 'code' in e ? String((e as { code: unknown }).code) : undefined,
+        });
+      }
+    },
+    [pushEvent, status],
+  );
+
   const refreshTxStatus = useCallback(async () => {
     const c8 = providerRef.current;
     const txId = lastTxId;
@@ -371,6 +431,7 @@ export function useCantor8Wallet(
     disconnect,
     refresh,
     send,
+    signAndExecute,
     refreshTxStatus,
     clearEvents,
   };

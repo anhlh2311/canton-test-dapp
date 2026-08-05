@@ -12,7 +12,7 @@ version `0.4.0`.
 - SDK documentation: [Cantor8 Wallet SDK](https://cantor8.mintlify.app/wallet-sdk/introduction)
 - PartyLayer's `@partylayer/adapter-cantor8` path is **unchanged** — this page uses the SDK directly
 
-Phase B (`signAndExecute`) is deferred until Phase A connect → transfer → status is verified on `devnet`.
+Phase B (`signAndExecute`) is implemented on the same `/cantor8/` page.
 
 ## Architecture
 
@@ -86,14 +86,17 @@ Provider is created on mount and **recreated when network changes** (disconnect 
 
 Connection and send **must** run from a direct user gesture (button click). The page surfaces hints about popup blocking.
 
-## Phase B (deferred)
+## Phase B (signAndExecute)
 
-Same page, new card — ship only after Phase A is verified on `devnet`:
+Same page, **Sign & Execute** card:
 
-- **Sign & execute** — `note`, `partyId`, `commandId` (UUID), `commandsJson`, `disclosedContracts` → `signAndExecute()`
-- Add `signAndExecute` method on `useCantor8Wallet`
+- Hook: `useCantor8Wallet().signAndExecute({ note, partyId, commandId, commandsJson, disclosedContracts? })`
+- UI: editable fields + **Load Ping example** + **New commandId**
+- Must run from a user gesture (button click); opens the C8 wallet popup
+- Official Cantor8 guidance: Wallet Connect covers connect / balances / transfer. Custom templates (including Ping) may be rejected by the wallet backend (`TRANSPORT_ERROR` / similar).
+- The SDK does not return Allocation / LockedHolding / TradeProposal. For disclosures, fetch ACS with `includeCreatedEventBlob=true` elsewhere and pass the JSON string into `disclosedContracts`.
 
-Out of scope for Phase A and Phase B: `createSwapOffer`, CIP-0103 bridging, PartyLayer adapter changes.
+Out of scope: `createSwapOffer`, CIP-0103 bridging, PartyLayer adapter changes.
 
 ## Connection and Provider Lifecycle
 
