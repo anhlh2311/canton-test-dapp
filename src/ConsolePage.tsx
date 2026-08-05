@@ -78,6 +78,9 @@ export function ConsolePage({
   const hasTokens = Boolean(cw.tokens?.accessToken);
 
   const [signInput, setSignInput] = useState('Hello from Console walkthrough');
+  const [txTo, setTxTo] = useState('');
+  const [txAmount, setTxAmount] = useState('');
+  const [txMemo, setTxMemo] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [stepResults, setStepResults] = useState<Record<string, StepResult>>({});
 
@@ -418,6 +421,78 @@ export function ConsolePage({
 
       <StepCard
         n={8}
+        title="Transfer CC"
+        hint="Console SDK submitCommands (SignSendRequest) — from = connected party, token = CC. Extension prompts to approve. Solely @console-wallet/dapp-sdk; not PartyLayer / ledger proxy."
+        result={stepResults.transfer}
+      >
+        {!connected ? (
+          <p className="hint">Connect in step 1 first.</p>
+        ) : (
+          <div className="rocky-transfer-form">
+            <div className="account-row account-row-meta">
+              <span className="account-label">from:</span>
+              <code className="account-value wrap">{cw.account?.partyId ?? '—'}</code>
+            </div>
+            <label className="hint">
+              To (party id)
+              <input
+                className="sign-input"
+                style={{ display: 'block', width: '100%', marginTop: 4 }}
+                value={txTo}
+                onChange={(e) => setTxTo(e.target.value)}
+                placeholder="receiver::1220…"
+                disabled={busy !== null}
+              />
+            </label>
+            <div className="rocky-transfer-row" style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              <label className="hint" style={{ flex: '1 1 120px' }}>
+                Amount (CC)
+                <input
+                  className="sign-input"
+                  style={{ display: 'block', width: '100%', marginTop: 4 }}
+                  value={txAmount}
+                  onChange={(e) => setTxAmount(e.target.value)}
+                  placeholder="1.5"
+                  disabled={busy !== null}
+                />
+              </label>
+              <label className="hint" style={{ flex: '2 1 200px' }}>
+                Memo (optional)
+                <input
+                  className="sign-input"
+                  style={{ display: 'block', width: '100%', marginTop: 4 }}
+                  value={txMemo}
+                  onChange={(e) => setTxMemo(e.target.value)}
+                  placeholder="Payment for services"
+                  disabled={busy !== null}
+                />
+              </label>
+            </div>
+            <p className="hint">Offer expires in 24h (expireDate ISO). waitForFinalization = 5000ms.</p>
+            <div className="button-row">
+              <button
+                onClick={() =>
+                  runStep('transfer', 'CC transfer submitted', () =>
+                    cw.transferCc({
+                      to: txTo,
+                      amount: txAmount,
+                      memo: txMemo || undefined,
+                    }),
+                  )
+                }
+                disabled={
+                  busy !== null || !connected || !txTo.trim() || !txAmount.trim()
+                }
+              >
+                {busy === 'transfer' ? 'Sending…' : 'Send CC'}
+              </button>
+            </div>
+          </div>
+        )}
+      </StepCard>
+
+      <StepCard
+        n={9}
         title="Submit Ping"
         hint="prepareExecuteAndWait with Canton.Internal.Ping (fused sign+submit)."
         result={stepResults.ping}
@@ -433,7 +508,7 @@ export function ConsolePage({
       </StepCard>
 
       <StepCard
-        n={9}
+        n={10}
         title="Refresh token"
         hint="ledgerRefresh with the same publicKey; older refresh tokens become invalid."
         result={stepResults.refresh}

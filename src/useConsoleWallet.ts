@@ -530,6 +530,48 @@ export function useConsoleWallet() {
     });
   }, [account]);
 
+  /**
+   * Transfer Canton Coin via Console SDK `submitCommands` (SignSendRequest).
+   * This is Console's dedicated CC send helper — not prepareExecute / ledger proxy.
+   */
+  const transferCc = useCallback(
+    async (args: { to: string; amount: string; memo?: string; expireHours?: number }) => {
+      const primary = account ?? (await consoleWallet.getPrimaryAccount());
+      if (!primary?.partyId) throw new Error('Connect Console Wallet first');
+
+      const to = args.to.trim();
+      const amount = args.amount.trim();
+      if (!to.includes('::')) {
+        throw new Error('Recipient must be a party id (hint::fingerprint)');
+      }
+      if (!amount || Number.isNaN(Number(amount)) || Number(amount) <= 0) {
+        throw new Error('Amount must be a positive number string (e.g. 1.5)');
+      }
+
+      const hours = args.expireHours && args.expireHours > 0 ? args.expireHours : 24;
+      const expireDate = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+      const memo = args.memo?.trim() || undefined;
+
+      const result = await consoleWallet.submitCommands({
+        from: primary.partyId,
+        to,
+        token: 'CC',
+        amount,
+        expireDate,
+        memo,
+        waitForFinalization: 5000,
+      });
+
+      if (result && typeof result === 'object' && 'status' in result && !(result as { status?: boolean }).status) {
+        throw new Error(
+          `Console submitCommands returned status=false: ${formatConsoleError(result)}`,
+        );
+      }
+      return result;
+    },
+    [account],
+  );
+
   return {
     status,
     availability,
@@ -553,6 +595,7 @@ export function useConsoleWallet() {
     queryActiveContracts,
     getCoinsBalance,
     createPing,
+    transferCc,
   };
 }
 
