@@ -81,4 +81,14 @@ test('vite preview /__c8/embedded/ returns wallet SPA via same-origin proxy', as
   assert.equal(asset.status, 200);
   const js = await asset.text();
   assert.ok(js.length > 1000, 'expected expo entry bundle');
+
+  // Root WASM must be proxied as binary — SPA HTML breaks WebAssembly.instantiate.
+  const wasm = await fetch(`${BASE}/canvaskit.wasm`, {
+    headers: { cookie: 'c8_proxy=1; c8u=mainnet', accept: '*/*' },
+  });
+  assert.equal(wasm.status, 200);
+  const buf = Buffer.from(await wasm.arrayBuffer());
+  assert.equal(buf.subarray(0, 4).toString('utf8'), '\0asm', `expected wasm magic, got ${buf.subarray(0, 8)}`);
+  const ct = wasm.headers.get('content-type') ?? '';
+  assert.doesNotMatch(ct, /text\/html/i);
 });

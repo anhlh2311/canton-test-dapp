@@ -38,11 +38,16 @@ export function readCookie(cookieHeader, name) {
   return undefined;
 }
 
+const STATIC_EXT =
+  /\.(wasm|data|mem|js|mjs|css|map|png|jpg|jpeg|gif|webp|svg|ico|woff2?|ttf|otf|json)$/i;
+
 /**
  * @param {import('http').IncomingMessage | Request} req
  * @param {string} pathname
  */
 export function isDocumentRequest(req, pathname) {
+  // Never SPA-fallback binaries — HTML for .wasm breaks WebAssembly.instantiate.
+  if (STATIC_EXT.test(pathname)) return false;
   const accept =
     typeof req.headers?.get === 'function'
       ? String(req.headers.get('accept') ?? '')

@@ -2,7 +2,7 @@
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },
     {
-      "source": "/((?!api/|__c8(?:/|$)|_expo/|embedded(?:/|$)|setup(?:/|$)|trade(?:/|$)).*)",
+      "source": "/((?!api/|__c8(?:/|$)|_expo/|embedded(?:/|$)|setup(?:/|$)|trade(?:/|$)|.*\\.wasm$|.*\\.data$|.*\\.mem$).*)",
       "destination": "/index.html"
     }
   ]

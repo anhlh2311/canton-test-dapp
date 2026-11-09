@@ -32,6 +32,9 @@ function isDappPath(pathname: string): boolean {
   return false;
 }
 
+const WALLET_STATIC_EXT =
+  /\.(wasm|data|mem|js|mjs|css|map|png|jpg|jpeg|gif|webp|svg|ico|woff2?|ttf|otf|json)$/i;
+
 function shouldProxy(pathname: string, hasProxyCookie: boolean): boolean {
   if (pathname === PREFIX || pathname.startsWith(`${PREFIX}/`)) return true;
   if (!hasProxyCookie) return false;
@@ -41,6 +44,8 @@ function shouldProxy(pathname: string, hasProxyCookie: boolean): boolean {
   if (pathname.startsWith('/setup')) return true;
   if (pathname.startsWith('/trade')) return true;
   if (pathname === '/favicon.ico') return true;
+  // Root CanvasKit / DotLottie WASM etc. (must not hit Vite SPA index.html).
+  if (WALLET_STATIC_EXT.test(pathname)) return true;
   return false;
 }
 

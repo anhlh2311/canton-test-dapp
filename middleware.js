@@ -4,7 +4,7 @@
  * Public wallet hosts 404 /embedded/. The SDK popup opens
  * `${location.origin}/__c8/embedded/?c8u=…` on this dApp instead; we reverse-proxy
  * the real wallet with SPA fallback. A short-lived cookie also proxies Expo
- * absolute navigations (/_expo/*, /embedded/*, /setup/*, …) from that popup.
+ * absolute navigations and root static assets (e.g. /canvaskit.wasm).
  */
 const UPSTREAMS = {
   mainnet: 'https://wallet.cantor8.tech',
@@ -14,6 +14,10 @@ const UPSTREAMS = {
 const C8U_COOKIE = 'c8u';
 const C8_PROXY_COOKIE = 'c8_proxy';
 const PREFIX = '/__c8';
+
+/** Static extensions that belong to the wallet popup (never SPA-fallback). */
+const WALLET_STATIC_EXT =
+  /\.(wasm|data|mem|js|mjs|css|map|png|jpg|jpeg|gif|webp|svg|ico|woff2?|ttf|otf|json)$/i;
 
 function resolveUpstream(value) {
   const key = String(value ?? '').trim().toLowerCase();
@@ -33,6 +37,8 @@ function readCookie(header, name) {
 }
 
 function isDocumentRequest(request, pathname) {
+  // Never SPA-fallback binaries / static assets — HTML here breaks WebAssembly.
+  if (WALLET_STATIC_EXT.test(pathname)) return false;
   const accept = request.headers.get('accept') ?? '';
   if (accept.includes('text/html')) return true;
   if (pathname === '/' || pathname.endsWith('.html')) return true;
@@ -43,6 +49,7 @@ function isDocumentRequest(request, pathname) {
 /** Paths that belong to this Vite dApp — never proxy these. */
 function isDappPath(pathname) {
   if (pathname === '/' || pathname === '/index.html') return true;
+  // Vite hashed assets live under /assets/index-*. Do not proxy those.
   if (pathname.startsWith('/assets/')) return true;
   if (pathname.startsWith('/api/')) return true;
   if (
@@ -75,6 +82,8 @@ function shouldProxyWalletPath(pathname, hasProxyCookie) {
   if (pathname.startsWith('/trade')) return true;
   if (pathname.startsWith('/(embedded)')) return true;
   if (pathname === '/favicon.ico') return true;
+  // Root CanvasKit / DotLottie WASM and similar static files next to the SPA.
+  if (WALLET_STATIC_EXT.test(pathname)) return true;
   return false;
 }
 
@@ -102,8 +111,6 @@ function stripHopByHop(headers) {
 }
 
 async function proxyToWallet(request, upstreamPath, upstreamBase, setCookies) {
-  const upstreamParams = new URL(upstreamPath, 'http://local').searchParams;
-  // keep search on upstreamPath as provided
   const target = new URL(upstreamPath, `${upstreamBase}/`);
   target.searchParams.delete('c8u');
 
@@ -137,6 +144,10 @@ async function proxyToWallet(request, upstreamPath, upstreamBase, setCookies) {
   headers.set('x-c8-spa-proxy-status', servedFallback ? 'fallback-index' : 'passthrough');
   headers.set('x-c8-spa-proxy-upstream', upstreamBase);
   if (servedFallback) headers.set('content-type', 'text/html; charset=utf-8');
+  // Ensure wasm is not served as text/html if upstream mislabels.
+  if (pathname.endsWith('.wasm') && !servedFallback) {
+    headers.set('content-type', 'application/wasm');
+  }
   for (const c of setCookies) headers.append('set-cookie', c);
 
   if (request.method === 'HEAD') {
@@ -150,7 +161,7 @@ async function proxyToWallet(request, upstreamPath, upstreamBase, setCookies) {
 
 export default async function middleware(request) {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
-    return; // fall through
+    return;
   }
 
   const url = new URL(request.url);
@@ -193,6 +204,7 @@ export default async function middleware(request) {
 }
 
 export const config = {
+  // Broad matcher so root *.wasm (canvaskit) is intercepted when c8_proxy cookie is set.
   matcher: [
     '/__c8',
     '/__c8/:path*',
@@ -204,5 +216,8 @@ export const config = {
     '/trade',
     '/trade/:path*',
     '/favicon.ico',
+    '/:file*.wasm',
+    '/:file*.data',
+    '/:file*.mem',
   ],
 };
