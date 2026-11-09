@@ -56,8 +56,9 @@ function isDocumentRequest(request, pathname) {
 /** Paths that belong to this Vite dApp — never proxy these. */
 function isDappPath(pathname) {
   if (pathname === '/' || pathname === '/index.html') return true;
-  // Vite hashed assets live under /assets/index-*. Do not proxy those.
-  if (pathname.startsWith('/assets/')) return true;
+  // Vite hashed bundles are /assets/index-*. Wallet Expo assets are /assets/assets/* —
+  // those must be proxied (otherwise fonts/images become SPA HTML and fail to decode).
+  if (pathname.startsWith('/assets/') && !pathname.startsWith('/assets/assets/')) return true;
   if (pathname.startsWith('/api/')) return true;
   if (
     pathname === '/cantor8' ||
@@ -84,6 +85,8 @@ function shouldProxyWalletPath(pathname, hasProxyCookie) {
   if (!hasProxyCookie) return false;
   if (isDappPath(pathname)) return false;
   if (pathname.startsWith('/_expo/')) return true;
+  // Wallet Expo static fonts/images (e.g. InterTight.ttf, embedded icon.png).
+  if (pathname.startsWith('/assets/assets/')) return true;
   if (pathname.startsWith('/embedded')) return true;
   if (pathname.startsWith('/setup')) return true;
   if (pathname.startsWith('/trade')) return true;
@@ -339,6 +342,7 @@ export const config = {
     '/__c8api',
     '/__c8api/:path*',
     '/_expo/:path*',
+    '/assets/assets/:path*',
     '/embedded',
     '/embedded/:path*',
     '/setup',

@@ -16,7 +16,8 @@ const API_PREFIX = '/__c8api/';
 
 function isDappPath(pathname: string): boolean {
   if (pathname === '/' || pathname === '/index.html') return true;
-  if (pathname.startsWith('/assets/')) return true;
+  // Vite hashed bundles are /assets/index-*. Wallet Expo assets are /assets/assets/*.
+  if (pathname.startsWith('/assets/') && !pathname.startsWith('/assets/assets/')) return true;
   if (pathname.startsWith('/api/')) return true;
   if (
     pathname.startsWith('/cantor8') ||
@@ -42,6 +43,7 @@ function shouldProxy(pathname: string, hasProxyCookie: boolean): boolean {
   if (!hasProxyCookie) return false;
   if (isDappPath(pathname)) return false;
   if (pathname.startsWith('/_expo/')) return true;
+  if (pathname.startsWith('/assets/assets/')) return true;
   if (pathname.startsWith('/embedded')) return true;
   if (pathname.startsWith('/setup')) return true;
   if (pathname.startsWith('/trade')) return true;

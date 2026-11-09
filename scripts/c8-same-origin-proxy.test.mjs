@@ -119,4 +119,24 @@ test('vite preview /__c8/embedded/ returns wallet SPA via same-origin proxy', as
   assert.equal(api.headers.get('x-c8-spa-proxy-status'), 'api-proxy');
   const cfg = await api.json();
   assert.ok(cfg.app_min_version || cfg.app_max_version, 'expected AppConfig JSON');
+
+  // Wallet Expo fonts/images live under /assets/assets/* — must not become SPA HTML.
+  const font = await fetch(
+    `${BASE}/assets/assets/fonts/InterTight-SemiBold.ebe29cd6717bf01458d24f484102bcd7.ttf`,
+    { headers: { cookie: 'c8_proxy=1; c8u=mainnet', accept: '*/*' } },
+  );
+  assert.equal(font.status, 200);
+  const fontBuf = Buffer.from(await font.arrayBuffer());
+  assert.notEqual(fontBuf.subarray(0, 4).toString('utf8'), '<!do', 'font must not be SPA HTML');
+  assert.ok(
+    fontBuf[0] === 0x00 || fontBuf.subarray(0, 4).toString('ascii') === 'OTTO',
+    `expected TTF/OTF magic, got ${fontBuf.subarray(0, 8).toString('hex')}`,
+  );
+  const icon = await fetch(
+    `${BASE}/assets/assets/images/embedded/icon.ac81fff8388915ca4b3cbd03e9b8cefe.png`,
+    { headers: { cookie: 'c8_proxy=1; c8u=mainnet', accept: '*/*' } },
+  );
+  assert.equal(icon.status, 200);
+  const iconBuf = Buffer.from(await icon.arrayBuffer());
+  assert.equal(iconBuf.subarray(0, 8).toString('hex'), '89504e470d0a1a0a', 'expected PNG magic');
 });
