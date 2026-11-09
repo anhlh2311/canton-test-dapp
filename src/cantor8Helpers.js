@@ -1,5 +1,19 @@
 export const CANTOR8_DAPP_NAME = 'Cantor8 Wallet Connect SDK Demo';
 
+/** Public C8 Wallet URL (mainnet popup origin). */
+export const CANTOR8_WALLET_URL = 'https://wallet.cantor8.tech/';
+
+/**
+ * Popup origin used by `@cantor8/wallet-connect-sdk@0.4.0` for each network.
+ * @param {'devnet' | 'mainnet'} network
+ * @returns {string}
+ */
+export function cantor8WalletOrigin(network) {
+  return network === 'mainnet'
+    ? 'https://wallet.cantor8.tech'
+    : 'https://wallet.dev.digik.cantor8.tech';
+}
+
 /**
  * @param {string} to
  * @param {string} amount

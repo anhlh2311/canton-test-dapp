@@ -8,8 +8,8 @@ version `0.4.0`.
 
 - Target: `canton-test-dapp` (React 19, TypeScript, Vite)
 - Route: `/cantor8/` (and `/cantor8`)
-- Default network: `devnet` with UI toggle for `mainnet`
-- SDK documentation: [Cantor8 Wallet SDK](https://cantor8.mintlify.app/wallet-sdk/introduction)
+- Default network: `mainnet` (popup at [https://wallet.cantor8.tech/](https://wallet.cantor8.tech/)) with UI toggle for `devnet`
+- SDK documentation: [Cantor8 Wallet SDK](https://docs.cantor8.tech/wallet-sdk/introduction)
 - PartyLayer's `@partylayer/adapter-cantor8` path is **unchanged** — this page uses the SDK directly
 
 Phase B (`signAndExecute`) is implemented on the same `/cantor8/` page.
@@ -29,7 +29,7 @@ sequenceDiagram
   participant Popup as C8 Wallet popup
 
   User->>Page: Open /cantor8/
-  Page->>Hook: Mount (network=devnet)
+  Page->>Hook: Mount (network=mainnet)
   Hook->>SDK: new C8WalletProvider({ dappName, dappUrl, network })
   Hook->>SDK: on(connected, disconnected, accountChanged, tx*, operationCanceled)
   User->>Page: Connect
@@ -76,8 +76,8 @@ Provider is created on mount and **recreated when network changes** (disconnect 
 | Capability | Implementation |
 |------------|----------------|
 | Connect / disconnect | `connect()` / `disconnect()` via user-gesture buttons |
-| Network | Default `devnet`; `setNetwork('devnet' \| 'mainnet')` tears down session and recreates provider |
-| Config | `dappName = "Cantor8 Wallet Connect SDK Demo"`, `dappUrl = window.location.href` |
+| Network | Default `mainnet` → `https://wallet.cantor8.tech`; `devnet` → `https://wallet.dev.digik.cantor8.tech`; `setNetwork` tears down session and recreates provider |
+| Config | `dappName = "Cantor8 Wallet Connect SDK Demo"`, `dappUrl = window.location.href`, wallet URL `CANTOR8_WALLET_URL` |
 | Instruments & accounts | `getInstruments()` + `getAccounts(instrumentId)` after connect; instrument/party selectors; manual refresh |
 | Transfer | `send({ senderPartyId, instrumentId, amount, receiverPartyId, memo? })` from selected account |
 | Tx status | `checkTxStatusById({ txId })` + `txChanged` event subscription |
@@ -106,7 +106,7 @@ On mount the hook creates `C8WalletProvider` with the active network and registe
 new C8WalletProvider({
   dappName: 'Cantor8 Wallet Connect SDK Demo',
   dappUrl: window.location.href,
-  network: 'devnet', // or 'mainnet'
+  network: 'mainnet', // popup: https://wallet.cantor8.tech — or 'devnet'
 });
 ```
 

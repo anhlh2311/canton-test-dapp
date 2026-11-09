@@ -4,10 +4,18 @@ import {
   assertValidCantor8Transfer,
   describeCantor8Error,
   CANTOR8_DAPP_NAME,
+  CANTOR8_WALLET_URL,
+  cantor8WalletOrigin,
 } from './cantor8Helpers.js';
 
 test('CANTOR8_DAPP_NAME matches registered demo name', () => {
   assert.equal(CANTOR8_DAPP_NAME, 'Cantor8 Wallet Connect SDK Demo');
+});
+
+test('CANTOR8_WALLET_URL points at the public C8 Wallet', () => {
+  assert.equal(CANTOR8_WALLET_URL, 'https://wallet.cantor8.tech/');
+  assert.equal(cantor8WalletOrigin('mainnet'), 'https://wallet.cantor8.tech');
+  assert.equal(cantor8WalletOrigin('devnet'), 'https://wallet.dev.digik.cantor8.tech');
 });
 
 test('assertValidCantor8Transfer accepts positive amounts and trims party', () => {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import './App.css';
 import { useCantor8Wallet, type Cantor8Status } from './useCantor8Wallet';
+import { CANTOR8_WALLET_URL, cantor8WalletOrigin } from './cantor8Helpers.js';
 import { ConnectionModeNav } from './ConnectionModeNav';
 
 const STATUS_LABEL: Record<Cantor8Status, string> = {
@@ -134,8 +135,12 @@ export function Cantor8Page({
       <h1>Cantor8</h1>
       <p className="subtitle">
         Direct <code>@cantor8/wallet-connect-sdk</code> integration (not PartyLayer&apos;s Cantor8
-        adapter). Docs:{' '}
-        <a href="https://cantor8.mintlify.app/wallet-sdk/introduction" target="_blank" rel="noreferrer">
+        adapter). Wallet:{' '}
+        <a href={CANTOR8_WALLET_URL} target="_blank" rel="noreferrer">
+          {CANTOR8_WALLET_URL}
+        </a>
+        . Docs:{' '}
+        <a href="https://docs.cantor8.tech/wallet-sdk/introduction" target="_blank" rel="noreferrer">
           Wallet SDK
         </a>
       </p>
@@ -167,8 +172,13 @@ export function Cantor8Page({
           </button>
         </div>
         <p className="hint">
-          Active network: <b>{c8.network}</b>. Switching networks tears down the current wallet
-          session — reconnect afterward.
+          Active network: <b>{c8.network}</b> → popup{' '}
+          <code>{cantor8WalletOrigin(c8.network)}</code>. Switching networks tears down the current
+          wallet session — reconnect afterward. Default is mainnet (
+          <a href={CANTOR8_WALLET_URL} target="_blank" rel="noreferrer">
+            wallet.cantor8.tech
+          </a>
+          ).
         </p>
       </section>
 

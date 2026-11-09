@@ -63,7 +63,7 @@ function makeProvider(network: Cantor8Network): C8WalletProvider {
 }
 
 export function useCantor8Wallet(
-  initialNetwork: Cantor8Network = 'devnet',
+  initialNetwork: Cantor8Network = 'mainnet',
 ): UseCantor8Wallet {
   const [network, setNetworkState] = useState<Cantor8Network>(initialNetwork);
   const [status, setStatus] = useState<Cantor8Status>('idle');

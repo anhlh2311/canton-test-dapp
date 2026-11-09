@@ -53,7 +53,7 @@ sequenceDiagram
   participant Popup as C8 Wallet popup
 
   User->>Page: Open /cantor8/
-  Page->>Hook: Mount (network=devnet)
+  Page->>Hook: Mount (network=mainnet)
   Hook->>SDK: new C8WalletProvider({ dappName, network })
   Hook->>SDK: on(connected, disconnected, accountChanged, tx*)
   User->>Page: Connect
@@ -98,7 +98,7 @@ Suggested surface (names may be refined during implementation):
 | Capability | Behavior |
 |------------|----------|
 | Config | `dappName = "Cantor8 Wallet Connect SDK Demo"`, `dappUrl = window.location.href` |
-| Network | `network: 'devnet' \| 'mainnet'`; `setNetwork` disconnects + recreates provider |
+| Network | Default `mainnet` (popup `https://wallet.cantor8.tech`); `devnet` still available; `setNetwork` disconnects + recreates provider |
 | Status | `'idle' \| 'connecting' \| 'connected' \| 'error'` (+ wallet version from `status()`) |
 | Connect | `connect()` — must run from a user gesture |
 | Disconnect | `disconnect()` — clears instruments/accounts/tx state |
