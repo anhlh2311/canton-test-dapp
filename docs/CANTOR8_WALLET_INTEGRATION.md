@@ -2,15 +2,16 @@
 
 ## Status
 
-**Phase A implemented** on branch `feat/cantor8-wallet-page` against the official
+**Phase A + B implemented** against the official
 [`@cantor8/wallet-connect-sdk`](https://www.npmjs.com/package/@cantor8/wallet-connect-sdk)
-version `0.4.0`.
+version `0.9.0`.
 
 - Target: `canton-test-dapp` (React 19, TypeScript, Vite)
 - Route: `/cantor8/` (and `/cantor8`)
 - Default network: `mainnet` (popup at [https://wallet.cantor8.tech/](https://wallet.cantor8.tech/)) with UI toggle for `devnet`
 - SDK documentation: [Cantor8 Wallet SDK](https://docs.cantor8.tech/wallet-sdk/introduction)
 - PartyLayer's `@partylayer/adapter-cantor8` path is **unchanged** — this page uses the SDK directly
+- **Popup path workaround:** hosted C8 Wallet returns 404 for `/embedded/…` (no SPA rewrite). `vite.config.ts` rewrites the SDK popup opener to the origin root (`/`); the wallet still enters popup mode via `window.opener`.
 
 Phase B (`signAndExecute`) is implemented on the same `/cantor8/` page.
 
@@ -60,7 +61,8 @@ Provider is created on mount and **recreated when network changes** (disconnect 
 
 ## Files
 
-- [package.json](mdc:package.json) pins `@cantor8/wallet-connect-sdk` to `0.4.0`.
+- [package.json](mdc:package.json) pins `@cantor8/wallet-connect-sdk` to `0.9.0`.
+- [vite.config.ts](mdc:vite.config.ts) patches SDK popup URLs from `/embedded/…` → `/`.
 - [cantor8Helpers.js](mdc:src/cantor8Helpers.js) exports `CANTOR8_DAPP_NAME`, `assertValidCantor8Transfer`, and `describeCantor8Error`.
 - [cantor8Helpers.d.ts](mdc:src/cantor8Helpers.d.ts) exposes helper types to TypeScript.
 - [cantor8Helpers.test.mjs](mdc:src/cantor8Helpers.test.mjs) verifies transfer validation and error mapping.

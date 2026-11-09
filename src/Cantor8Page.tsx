@@ -173,8 +173,9 @@ export function Cantor8Page({
         </div>
         <p className="hint">
           Active network: <b>{c8.network}</b> → popup{' '}
-          <code>{cantor8WalletOrigin(c8.network)}</code>. Switching networks tears down the current
-          wallet session — reconnect afterward. Default is mainnet (
+          <code>{cantor8WalletOrigin(c8.network)}/</code> (SDK `/embedded/` path is rewritten to
+          origin root because the hosted wallet 404s deep links). Switching networks tears down the
+          current session — reconnect afterward. Default is mainnet (
           <a href={CANTOR8_WALLET_URL} target="_blank" rel="noreferrer">
             wallet.cantor8.tech
           </a>

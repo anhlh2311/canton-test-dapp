@@ -4,7 +4,8 @@ export const CANTOR8_DAPP_NAME = 'Cantor8 Wallet Connect SDK Demo';
 export const CANTOR8_WALLET_URL = 'https://wallet.cantor8.tech/';
 
 /**
- * Popup origin used by `@cantor8/wallet-connect-sdk@0.4.0` for each network.
+ * Popup origin used by `@cantor8/wallet-connect-sdk` for each network.
+ * (Devnet still uses the digik host in current SDK releases.)
  * @param {'devnet' | 'mainnet'} network
  * @returns {string}
  */
