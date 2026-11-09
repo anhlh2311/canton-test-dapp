@@ -93,4 +93,18 @@ test('vite preview /__c8/embedded/ returns wallet SPA via same-origin proxy', as
   assert.equal(buf.subarray(0, 4).toString('utf8'), '\0asm', `expected wasm magic, got ${buf.subarray(0, 8)}`);
   const ct = wasm.headers.get('content-type') ?? '';
   assert.doesNotMatch(ct, /text\/html/i);
+
+  // After path-strip, CanvasKit resolves relative to /embedded/ → nested wasm 404s upstream.
+  // Proxy must remap to /canvaskit.wasm or the Passkey approval canvas stays blank.
+  const nested = await fetch(`${BASE}/embedded/canvaskit.wasm`, {
+    headers: { cookie: 'c8_proxy=1; c8u=mainnet', accept: '*/*' },
+  });
+  assert.equal(nested.status, 200);
+  assert.equal(nested.headers.get('x-c8-spa-proxy-status'), 'fallback-wasm-root');
+  const nestedBuf = Buffer.from(await nested.arrayBuffer());
+  assert.equal(
+    nestedBuf.subarray(0, 4).toString('utf8'),
+    '\0asm',
+    `expected nested wasm remap magic, got ${nestedBuf.subarray(0, 8)}`,
+  );
 });

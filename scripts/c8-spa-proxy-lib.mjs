@@ -42,6 +42,20 @@ const STATIC_EXT =
   /\.(wasm|data|mem|js|mjs|css|map|png|jpg|jpeg|gif|webp|svg|ico|woff2?|ttf|otf|json)$/i;
 
 /**
+ * Skia/CanvasKit (and DotLottie) often resolve wasm relative to the page URL.
+ * On /embedded/ that becomes /embedded/canvaskit.wasm (404); the file lives at /canvaskit.wasm.
+ * @param {string} pathname
+ * @returns {string | null} root path like /canvaskit.wasm, or null if already root / not wasm
+ */
+export function wasmRootFallbackPath(pathname) {
+  if (!pathname.toLowerCase().endsWith('.wasm')) return null;
+  const base = pathname.split('/').filter(Boolean).pop();
+  if (!base) return null;
+  const root = `/${base}`;
+  return pathname === root ? null : root;
+}
+
+/**
  * Expo Router reads location.pathname. When the popup is opened under /__c8/embedded/,
  * strip that prefix before the wallet app boots so routes match /embedded (MessageListener).
  * @param {string} html
@@ -176,6 +190,8 @@ export async function proxySpaRequest(opts) {
 
   let upstreamRes = await fetchUpstream(upstream, upstreamPath, reqHeaders);
   let servedFallback = false;
+  /** @type {'passthrough' | 'fallback-index' | 'fallback-wasm-root'} */
+  let proxyStatus = 'passthrough';
 
   const doc = isDocumentRequest(
     { headers: { accept: opts.acceptHeader ?? '' } },
@@ -189,16 +205,31 @@ export async function proxySpaRequest(opts) {
     if (fallback.status >= 200 && fallback.status < 300 && fallback.buf.length > 0) {
       upstreamRes = { ...fallback, status: 200 };
       servedFallback = true;
+      proxyStatus = 'fallback-index';
     }
   }
 
-  const headers = copyProxyHeaders(
-    upstreamRes.headers,
-    servedFallback ? 'fallback-index' : 'passthrough',
-  );
+  // Nested wasm 404 → retry /basename (CanvasKit after Passkey on /embedded/).
+  const wasmRoot = wasmRootFallbackPath(opts.pathname);
+  if (upstreamRes.status === 404 && wasmRoot) {
+    const fallback = await fetchUpstream(upstream, wasmRoot, {
+      accept: opts.acceptHeader ?? 'application/wasm,*/*',
+      'user-agent': reqHeaders['user-agent'],
+    });
+    if (fallback.status >= 200 && fallback.status < 300 && fallback.buf.length > 4) {
+      upstreamRes = { ...fallback, status: 200 };
+      servedFallback = true;
+      proxyStatus = 'fallback-wasm-root';
+    }
+  }
+
+  const headers = copyProxyHeaders(upstreamRes.headers, proxyStatus);
   headers['x-c8-spa-proxy-upstream'] = upstream;
-  if (servedFallback) {
+  if (proxyStatus === 'fallback-index') {
     headers['content-type'] = 'text/html; charset=utf-8';
+  }
+  if (proxyStatus === 'fallback-wasm-root' || (opts.pathname.endsWith('.wasm') && !servedFallback)) {
+    headers['content-type'] = 'application/wasm';
   }
   if (setCookie) {
     headers['set-cookie'] = setCookie;

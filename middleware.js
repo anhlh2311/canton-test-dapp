@@ -5,6 +5,8 @@
  * `${location.origin}/__c8/embedded/?c8u=…` on this dApp instead; we reverse-proxy
  * the real wallet with SPA fallback. A short-lived cookie also proxies Expo
  * absolute navigations and root static assets (e.g. /canvaskit.wasm).
+ * Nested wasm (e.g. /embedded/canvaskit.wasm) 404s on the wallet host — CanvasKit
+ * resolves relative to /embedded/ after path-strip; we fall back to /canvaskit.wasm.
  */
 const UPSTREAMS = {
   mainnet: 'https://wallet.cantor8.tech',
@@ -110,6 +112,15 @@ function stripHopByHop(headers) {
   return out;
 }
 
+/** @returns {string | null} */
+function wasmRootFallbackPath(pathname) {
+  if (!pathname.toLowerCase().endsWith('.wasm')) return null;
+  const base = pathname.split('/').filter(Boolean).pop();
+  if (!base) return null;
+  const root = `/${base}`;
+  return pathname === root ? null : root;
+}
+
 async function proxyToWallet(request, upstreamPath, upstreamBase, setCookies, stripPrefix) {
   const target = new URL(upstreamPath, `${upstreamBase}/`);
   target.searchParams.delete('c8u');
@@ -125,7 +136,8 @@ async function proxyToWallet(request, upstreamPath, upstreamBase, setCookies, st
     headers: forwardHeaders,
     redirect: 'manual',
   });
-  let servedFallback = false;
+  /** @type {'passthrough' | 'fallback-index' | 'fallback-wasm-root'} */
+  let proxyStatus = 'passthrough';
   const pathname = new URL(upstreamPath, 'http://local').pathname;
 
   if (upstreamRes.status === 404 && isDocumentRequest(request, pathname)) {
@@ -136,29 +148,47 @@ async function proxyToWallet(request, upstreamPath, upstreamBase, setCookies, st
     });
     if (fallback.ok) {
       upstreamRes = fallback;
-      servedFallback = true;
+      proxyStatus = 'fallback-index';
+    }
+  }
+
+  const wasmRoot = wasmRootFallbackPath(pathname);
+  if (upstreamRes.status === 404 && wasmRoot) {
+    const fallback = await fetch(new URL(wasmRoot, `${upstreamBase}/`), {
+      method: 'GET',
+      headers: {
+        accept: accept ?? 'application/wasm,*/*',
+        'user-agent': ua ?? 'c8-spa-proxy',
+      },
+      redirect: 'manual',
+    });
+    if (fallback.ok) {
+      upstreamRes = fallback;
+      proxyStatus = 'fallback-wasm-root';
     }
   }
 
   const headers = stripHopByHop(upstreamRes.headers);
-  headers.set('x-c8-spa-proxy-status', servedFallback ? 'fallback-index' : 'passthrough');
+  headers.set('x-c8-spa-proxy-status', proxyStatus);
   headers.set('x-c8-spa-proxy-upstream', upstreamBase);
-  if (servedFallback) headers.set('content-type', 'text/html; charset=utf-8');
+  if (proxyStatus === 'fallback-index') headers.set('content-type', 'text/html; charset=utf-8');
   // Ensure wasm is not served as text/html if upstream mislabels.
-  if (pathname.endsWith('.wasm') && !servedFallback) {
+  if (pathname.endsWith('.wasm') && proxyStatus !== 'fallback-index') {
     headers.set('content-type', 'application/wasm');
   }
   for (const c of setCookies) headers.append('set-cookie', c);
 
+  const okStatus = proxyStatus !== 'passthrough' ? 200 : upstreamRes.status;
+
   if (request.method === 'HEAD') {
-    return new Response(null, { status: servedFallback ? 200 : upstreamRes.status, headers });
+    return new Response(null, { status: okStatus, headers });
   }
 
   let body = await upstreamRes.arrayBuffer();
   // Expo Router matches /embedded, not /__c8/embedded — rewrite the visible path
   // before the wallet app boots so MessageListener mounts and handshake can complete.
   const ct = headers.get('content-type') ?? '';
-  if (stripPrefix && (servedFallback || ct.includes('text/html'))) {
+  if (stripPrefix && (proxyStatus === 'fallback-index' || ct.includes('text/html'))) {
     const html = new TextDecoder().decode(body);
     const snippet =
       '<script>(function(){try{var p=location.pathname;if(p==="/__c8"||p.indexOf("/__c8/")===0){var n=p==="/__c8"?"/":p.slice(5)||"/";history.replaceState(null,"",n+location.search+location.hash)}}catch(e){}})();</script>';
@@ -171,7 +201,7 @@ async function proxyToWallet(request, upstreamPath, upstreamBase, setCookies, st
   }
 
   return new Response(body, {
-    status: servedFallback ? 200 : upstreamRes.status,
+    status: okStatus,
     headers,
   });
 }
