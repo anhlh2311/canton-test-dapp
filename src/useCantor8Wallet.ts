@@ -247,6 +247,7 @@ export function useCantor8Wallet(
     setStatus('connecting');
     try {
       const c8 = ensureProvider(network);
+      // Must run from a user gesture (button click). Opens `${origin}/embedded/` per SDK 0.9.0.
       await c8.connect();
       const st = await c8.status();
       setWalletVersion(st.walletVersion);
@@ -254,7 +255,22 @@ export function useCantor8Wallet(
       await loadInstrumentsAndAccounts(c8);
     } catch (e) {
       setStatus('error');
-      setError(describeCantor8Error(e));
+      const mapped = describeCantor8Error(e);
+      const raw = e instanceof Error ? e.message : '';
+      // SDK sometimes rejects handshake failures without a stable code.
+      if (
+        !mapped.includes('/embedded/') &&
+        /handshake|timed out|popup closed|initialization/i.test(`${mapped} ${raw}`)
+      ) {
+        setError(
+          describeCantor8Error({
+            code: 'INITIALIZATION_FAILED',
+            message: raw || mapped,
+          }),
+        );
+      } else {
+        setError(mapped);
+      }
     }
   }, [ensureProvider, loadInstrumentsAndAccounts, network]);
 

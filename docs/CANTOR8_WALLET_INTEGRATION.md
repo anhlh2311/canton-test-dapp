@@ -11,7 +11,8 @@ version `0.9.0`.
 - Default network: `mainnet` (popup at [https://wallet.cantor8.tech/](https://wallet.cantor8.tech/)) with UI toggle for `devnet`
 - SDK documentation: [Cantor8 Wallet SDK](https://docs.cantor8.tech/wallet-sdk/introduction)
 - PartyLayer's `@partylayer/adapter-cantor8` path is **unchanged** — this page uses the SDK directly
-- **Popup path workaround:** hosted C8 Wallet returns 404 for `/embedded/…` (no SPA rewrite). `vite.config.ts` rewrites the SDK popup opener to the origin root (`/`); the wallet still enters popup mode via `window.opener`.
+- **Connect popup path:** SDK `0.9.0` opens `${walletOrigin}/embedded/` (`WALLET_EMBED_URL`). The connection-approval UI (`MessageListener` + pending `connect` request) mounts only under that Expo Router tree — not on `/`.
+- **Hosting blocker (2026-11-09):** `wallet.cantor8.tech` and `wallet.dev.digik.cantor8.tech` are served by Caddy and return **HTTP 404** for `/embedded/` (only `/` and `/index.html` return the SPA). Until Cantor8 adds an SPA fallback (`try_files {path} /index.html`), `connect()` cannot show the approval screen. Opening `/` shows the Passkey landing page and leaves the dApp stuck on "connecting…".
 
 Phase B (`signAndExecute`) is implemented on the same `/cantor8/` page.
 
@@ -62,7 +63,6 @@ Provider is created on mount and **recreated when network changes** (disconnect 
 ## Files
 
 - [package.json](mdc:package.json) pins `@cantor8/wallet-connect-sdk` to `0.9.0`.
-- [vite.config.ts](mdc:vite.config.ts) patches SDK popup URLs from `/embedded/…` → `/`.
 - [cantor8Helpers.js](mdc:src/cantor8Helpers.js) exports `CANTOR8_DAPP_NAME`, `assertValidCantor8Transfer`, and `describeCantor8Error`.
 - [cantor8Helpers.d.ts](mdc:src/cantor8Helpers.d.ts) exposes helper types to TypeScript.
 - [cantor8Helpers.test.mjs](mdc:src/cantor8Helpers.test.mjs) verifies transfer validation and error mapping.
@@ -79,7 +79,8 @@ Provider is created on mount and **recreated when network changes** (disconnect 
 |------------|----------------|
 | Connect / disconnect | `connect()` / `disconnect()` via user-gesture buttons |
 | Network | Default `mainnet` → `https://wallet.cantor8.tech`; `devnet` → `https://wallet.dev.digik.cantor8.tech`; `setNetwork` tears down session and recreates provider |
-| Config | `dappName = "Cantor8 Wallet Connect SDK Demo"`, `dappUrl = window.location.href`, wallet URL `CANTOR8_WALLET_URL` |
+| Config | `dappName = "Cantor8 Wallet Connect SDK Demo"` (must match wallet registration), `dappUrl = window.location.href`, wallet URL `CANTOR8_WALLET_URL` |
+| Connect popup | Official path `${origin}/embedded/` — see hosting blocker above |
 | Instruments & accounts | `getInstruments()` + `getAccounts(instrumentId)` after connect; instrument/party selectors; manual refresh |
 | Transfer | `send({ senderPartyId, instrumentId, amount, receiverPartyId, memo? })` from selected account |
 | Tx status | `checkTxStatusById({ txId })` + `txChanged` event subscription |

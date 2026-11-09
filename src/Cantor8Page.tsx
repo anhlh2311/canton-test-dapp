@@ -1,7 +1,11 @@
 import { useEffect, useState } from 'react';
 import './App.css';
 import { useCantor8Wallet, type Cantor8Status } from './useCantor8Wallet';
-import { CANTOR8_WALLET_URL, cantor8WalletOrigin } from './cantor8Helpers.js';
+import {
+  CANTOR8_WALLET_URL,
+  cantor8WalletEmbedUrl,
+  cantor8WalletOrigin,
+} from './cantor8Helpers.js';
 import { ConnectionModeNav } from './ConnectionModeNav';
 
 const STATUS_LABEL: Record<Cantor8Status, string> = {
@@ -172,14 +176,22 @@ export function Cantor8Page({
           </button>
         </div>
         <p className="hint">
-          Active network: <b>{c8.network}</b> → popup{' '}
-          <code>{cantor8WalletOrigin(c8.network)}/</code> (SDK `/embedded/` path is rewritten to
-          origin root because the hosted wallet 404s deep links). Switching networks tears down the
-          current session — reconnect afterward. Default is mainnet (
+          Active network: <b>{c8.network}</b>. Connect opens{' '}
+          <a href={cantor8WalletEmbedUrl(c8.network)} target="_blank" rel="noreferrer">
+            <code>{cantor8WalletEmbedUrl(c8.network)}</code>
+          </a>{' '}
+          (SDK <code>WALLET_EMBED_URL</code>). Origin{' '}
+          <code>{cantor8WalletOrigin(c8.network)}</code>. Switching networks tears down the session —
+          reconnect afterward. Default is mainnet (
           <a href={CANTOR8_WALLET_URL} target="_blank" rel="noreferrer">
             wallet.cantor8.tech
           </a>
           ).
+        </p>
+        <p className="hint" style={{ color: 'var(--danger, #c45)' }}>
+          If that `/embedded/` URL 404s in a new tab, Cantor8&apos;s host (Caddy) is missing the SPA
+          fallback the Wallet Connect SDK requires for the connection-approval popup. Opening `/`
+          only shows the Passkey home screen and cannot complete <code>connect()</code>.
         </p>
       </section>
 

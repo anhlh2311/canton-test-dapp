@@ -4,6 +4,8 @@ export declare const CANTOR8_WALLET_URL: 'https://wallet.cantor8.tech/';
 
 export declare function cantor8WalletOrigin(network: 'devnet' | 'mainnet'): string;
 
+export declare function cantor8WalletEmbedUrl(network: 'devnet' | 'mainnet'): string;
+
 export declare function assertValidCantor8Transfer(to: string, amount: string): number;
 
 export declare function describeCantor8Error(e: unknown): string;

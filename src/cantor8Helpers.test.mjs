@@ -6,6 +6,7 @@ import {
   CANTOR8_DAPP_NAME,
   CANTOR8_WALLET_URL,
   cantor8WalletOrigin,
+  cantor8WalletEmbedUrl,
 } from './cantor8Helpers.js';
 
 test('CANTOR8_DAPP_NAME matches registered demo name', () => {
@@ -16,6 +17,18 @@ test('CANTOR8_WALLET_URL points at the public C8 Wallet', () => {
   assert.equal(CANTOR8_WALLET_URL, 'https://wallet.cantor8.tech/');
   assert.equal(cantor8WalletOrigin('mainnet'), 'https://wallet.cantor8.tech');
   assert.equal(cantor8WalletOrigin('devnet'), 'https://wallet.dev.digik.cantor8.tech');
+  assert.equal(cantor8WalletEmbedUrl('mainnet'), 'https://wallet.cantor8.tech/embedded/');
+  assert.equal(
+    cantor8WalletEmbedUrl('devnet'),
+    'https://wallet.dev.digik.cantor8.tech/embedded/',
+  );
+});
+
+test('describeCantor8Error maps INITIALIZATION_FAILED to embed hosting hint', () => {
+  assert.match(
+    describeCantor8Error({ code: 'INITIALIZATION_FAILED', message: 'Handshake timed out' }),
+    /embedded/i,
+  );
 });
 
 test('assertValidCantor8Transfer accepts positive amounts and trims party', () => {
@@ -37,7 +50,7 @@ test('describeCantor8Error maps known codes', () => {
   assert.match(describeCantor8Error({ code: 'USER_REJECTED', message: 'x' }), /dismissed|reject/i);
   assert.match(describeCantor8Error({ code: 'NOT_CONNECTED', message: 'x' }), /connect/i);
   assert.match(describeCantor8Error({ code: 'INSUFFICIENT_FUNDS', message: 'x' }), /balance|funds/i);
-  assert.match(describeCantor8Error({ code: 'INIT_FAILED', message: 'x' }), /dappName|network|config/i);
+  assert.match(describeCantor8Error({ code: 'INIT_FAILED', message: 'x' }), /embedded|dappName|network/i);
   assert.match(
     describeCantor8Error({ code: 'TRANSFER_PREPARE_FAILED', message: 'x' }),
     /invalid|ledger|transfer/i,
