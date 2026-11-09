@@ -7,6 +7,7 @@ import {
   cantor8WalletOrigin,
 } from './cantor8Helpers.js';
 import { ConnectionModeNav } from './ConnectionModeNav';
+import type { Cantor8Network } from './useCantor8Wallet';
 
 const STATUS_LABEL: Record<Cantor8Status, string> = {
   idle: 'not connected',
@@ -61,6 +62,13 @@ export function Cantor8Page({
   const c8 = useCantor8Wallet();
   const connected = c8.status === 'connected';
 
+  const [embedHealth, setEmbedHealth] = useState<{
+    loading: boolean;
+    ok?: boolean;
+    status?: number;
+    hint?: string;
+  }>({ loading: true });
+
   const [txTo, setTxTo] = useState('');
   const [txAmount, setTxAmount] = useState('');
   const [txMemo, setTxMemo] = useState('');
@@ -89,6 +97,41 @@ export function Cantor8Page({
       setSxCommandsJson(buildPingCommandsJson(c8.selectedPartyId));
     }
   }, [c8.selectedPartyId, sxPartyId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setEmbedHealth({ loading: true });
+    const network = c8.network as Cantor8Network;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/cantor8-embed-health?network=${encodeURIComponent(network)}`);
+        const data = (await res.json()) as {
+          ok?: boolean;
+          status?: number;
+          hint?: string;
+        };
+        if (!cancelled) {
+          setEmbedHealth({
+            loading: false,
+            ok: Boolean(data.ok),
+            status: data.status,
+            hint: data.hint,
+          });
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setEmbedHealth({
+            loading: false,
+            ok: false,
+            hint: e instanceof Error ? e.message : String(e),
+          });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [c8.network]);
 
   async function handleTransfer() {
     setTransferState({ loading: true });
@@ -174,24 +217,42 @@ export function Cantor8Page({
           >
             mainnet
           </button>
+          <button
+            onClick={() => c8.setNetwork('local')}
+            disabled={c8.status === 'connecting' || c8.network === 'local'}
+            title="Requires yarn c8:proxy (SPA fallback on :8081)"
+          >
+            local proxy
+          </button>
         </div>
         <p className="hint">
           Active network: <b>{c8.network}</b>. Connect opens{' '}
           <a href={cantor8WalletEmbedUrl(c8.network)} target="_blank" rel="noreferrer">
             <code>{cantor8WalletEmbedUrl(c8.network)}</code>
           </a>{' '}
-          (SDK <code>WALLET_EMBED_URL</code>). Origin{' '}
-          <code>{cantor8WalletOrigin(c8.network)}</code>. Switching networks tears down the session —
-          reconnect afterward. Default is mainnet (
+          (SDK <code>WALLET_EMBED_URL=/embedded</code>). Origin{' '}
+          <code>{cantor8WalletOrigin(c8.network)}</code>. Default is mainnet (
           <a href={CANTOR8_WALLET_URL} target="_blank" rel="noreferrer">
             wallet.cantor8.tech
           </a>
-          ).
+          ). Use <b>local proxy</b> after <code>yarn c8:proxy</code> to work around the public
+          host&apos;s missing SPA fallback.
         </p>
-        <p className="hint" style={{ color: 'var(--danger, #c45)' }}>
-          If that `/embedded/` URL 404s in a new tab, Cantor8&apos;s host (Caddy) is missing the SPA
-          fallback the Wallet Connect SDK requires for the connection-approval popup. Opening `/`
-          only shows the Passkey home screen and cannot complete <code>connect()</code>.
+        <p
+          className="hint"
+          style={{
+            color: embedHealth.loading
+              ? undefined
+              : embedHealth.ok
+                ? 'var(--success, #2a7)'
+                : 'var(--danger, #c45)',
+          }}
+        >
+          {embedHealth.loading
+            ? 'Checking /embedded/ reachability…'
+            : embedHealth.ok
+              ? `Embed OK (HTTP ${embedHealth.status}). Connect should open the approval popup.`
+              : `Embed NOT OK (HTTP ${embedHealth.status ?? 'n/a'}). ${embedHealth.hint ?? ''} Public Caddy hosts currently 404 /embedded/; the Passkey home at / cannot complete SDK connect().`}
         </p>
       </section>
 

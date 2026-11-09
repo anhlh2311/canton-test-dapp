@@ -5,19 +5,19 @@ export const CANTOR8_WALLET_URL = 'https://wallet.cantor8.tech/';
 
 /**
  * Popup origin used by `@cantor8/wallet-connect-sdk@0.9.0` for each network.
- * (Devnet still uses the digik host in current SDK releases.)
- * @param {'devnet' | 'mainnet'} network
+ * `local` → http://localhost:8081 (run `yarn c8:proxy` for SPA fallback).
+ * @param {'devnet' | 'mainnet' | 'local'} network
  * @returns {string}
  */
 export function cantor8WalletOrigin(network) {
-  return network === 'mainnet'
-    ? 'https://wallet.cantor8.tech'
-    : 'https://wallet.dev.digik.cantor8.tech';
+  if (network === 'local') return 'http://localhost:8081';
+  if (network === 'mainnet') return 'https://wallet.cantor8.tech';
+  return 'https://wallet.dev.digik.cantor8.tech';
 }
 
 /**
  * Official connect/approval popup URL (SDK `WALLET_EMBED_URL` = `/embedded`).
- * @param {'devnet' | 'mainnet'} network
+ * @param {'devnet' | 'mainnet' | 'local'} network
  * @returns {string}
  */
 export function cantor8WalletEmbedUrl(network) {

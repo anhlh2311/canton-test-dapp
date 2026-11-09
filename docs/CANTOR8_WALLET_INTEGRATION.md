@@ -13,6 +13,9 @@ version `0.9.0`.
 - PartyLayer's `@partylayer/adapter-cantor8` path is **unchanged** — this page uses the SDK directly
 - **Connect popup path:** SDK `0.9.0` opens `${walletOrigin}/embedded/` (`WALLET_EMBED_URL`). The connection-approval UI (`MessageListener` + pending `connect` request) mounts only under that Expo Router tree — not on `/`.
 - **Hosting blocker (2026-11-09):** `wallet.cantor8.tech` and `wallet.dev.digik.cantor8.tech` are served by Caddy and return **HTTP 404** for `/embedded/` (only `/` and `/index.html` return the SPA). Until Cantor8 adds an SPA fallback (`try_files {path} /index.html`), `connect()` cannot show the approval screen. Opening `/` shows the Passkey landing page and leaves the dApp stuck on "connecting…".
+- **Local workaround:** `yarn c8:proxy` serves the real wallet through `http://localhost:8081` with SPA fallback; select **local proxy** on `/cantor8/` (SDK `network: "local"`). WebAuthn RP ID is `window.location.hostname`, so localhost passkeys are a separate identity from production.
+- **Health API:** `GET /api/cantor8-embed-health?network=mainnet|devnet|local` reports whether `/embedded/` is reachable (used by the page banner).
+- **Smoke test:** `yarn test` includes `scripts/c8-embed-smoke.test.mjs` (asserts public 404 + proxy 200).
 
 Phase B (`signAndExecute`) is implemented on the same `/cantor8/` page.
 

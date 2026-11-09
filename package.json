@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test": "node --test src/rockyAssets.test.mjs src/cantor8Helpers.test.mjs",
+    "test": "node --test src/rockyAssets.test.mjs src/cantor8Helpers.test.mjs scripts/c8-embed-smoke.test.mjs",
+    "c8:proxy": "node scripts/c8-spa-proxy.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

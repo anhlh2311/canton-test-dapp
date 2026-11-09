@@ -22,6 +22,8 @@ test('CANTOR8_WALLET_URL points at the public C8 Wallet', () => {
     cantor8WalletEmbedUrl('devnet'),
     'https://wallet.dev.digik.cantor8.tech/embedded/',
   );
+  assert.equal(cantor8WalletOrigin('local'), 'http://localhost:8081');
+  assert.equal(cantor8WalletEmbedUrl('local'), 'http://localhost:8081/embedded/');
 });
 
 test('describeCantor8Error maps INITIALIZATION_FAILED to embed hosting hint', () => {

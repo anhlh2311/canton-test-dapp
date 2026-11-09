@@ -10,7 +10,7 @@ import {
   describeCantor8Error,
 } from './cantor8Helpers.js';
 
-export type Cantor8Network = 'devnet' | 'mainnet';
+export type Cantor8Network = 'devnet' | 'mainnet' | 'local';
 export type Cantor8Status = 'idle' | 'connecting' | 'connected' | 'error';
 
 export type Cantor8EventLogEntry = {
