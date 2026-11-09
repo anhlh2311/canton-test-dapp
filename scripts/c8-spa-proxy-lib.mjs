@@ -79,6 +79,8 @@ export function copyProxyHeaders(upstreamHeaders, statusForBody) {
   out['cache-control'] = 'no-store';
   out['x-c8-spa-proxy'] = '1';
   out['x-c8-spa-proxy-status'] = statusForBody;
+  // Allow the Vite dApp (other origin) to health-check the standalone proxy.
+  out['access-control-allow-origin'] = '*';
   return out;
 }
 

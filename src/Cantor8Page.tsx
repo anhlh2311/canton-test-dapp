@@ -102,20 +102,30 @@ export function Cantor8Page({
     let cancelled = false;
     setEmbedHealth({ loading: true });
     const network = c8.network as Cantor8Network;
+    const embedUrl = resolveCantor8WalletEmbedUrl(network);
     void (async () => {
       try {
-        const res = await fetch(`/api/cantor8-embed-health?network=${encodeURIComponent(network)}`);
-        const data = (await res.json()) as {
-          ok?: boolean;
-          status?: number;
-          hint?: string;
-        };
+        // Browser-side check (keeps Vercel Authentication cookies). Serverless
+        // health fetches to the same deployment are blocked by Deployment Protection.
+        const res = await fetch(embedUrl, {
+          method: 'GET',
+          // same-origin for /__c8; omit credentials for optional localhost:8081 proxy
+          credentials: embedUrl.startsWith(window.location.origin) ? 'same-origin' : 'omit',
+          headers: { Accept: 'text/html' },
+        });
+        const html = await res.text();
+        const ok =
+          res.ok &&
+          /id=["']root["']/.test(html) &&
+          /_expo\/static\/js\/web\/entry-/.test(html);
         if (!cancelled) {
           setEmbedHealth({
             loading: false,
-            ok: Boolean(data.ok),
-            status: data.status,
-            hint: data.hint,
+            ok,
+            status: res.status,
+            hint: ok
+              ? 'Same-origin /__c8 SPA proxy is serving the wallet embed route.'
+              : 'Embed route did not return the wallet SPA (check middleware / network).',
           });
         }
       } catch (e) {

@@ -97,6 +97,7 @@ function stripHopByHop(headers) {
   });
   out.set('cache-control', 'no-store');
   out.set('x-c8-spa-proxy', '1');
+  out.set('access-control-allow-origin', '*');
   return out;
 }
 
