@@ -13,9 +13,9 @@ version `0.9.0`.
 - PartyLayer's `@partylayer/adapter-cantor8` path is **unchanged** — this page uses the SDK directly
 - **Connect popup path:** SDK `0.9.0` opens `${walletOrigin}/embedded/` (`WALLET_EMBED_URL`). The connection-approval UI (`MessageListener` + pending `connect` request) mounts only under that Expo Router tree — not on `/`.
 - **Hosting blocker (2026-11-09):** `wallet.cantor8.tech` and `wallet.dev.digik.cantor8.tech` are served by Caddy and return **HTTP 404** for `/embedded/` (only `/` and `/index.html` return the SPA). Until Cantor8 adds an SPA fallback (`try_files {path} /index.html`), a direct popup to those hosts cannot mount `MessageListener`. Opening `/` shows the Passkey landing page and leaves the dApp stuck on "connecting…".
-- **SPA proxy workaround:** `yarn c8:proxy` (or deploy [`c8-proxy/`](../c8-proxy/)) serves the real wallet with SPA fallback at origin root. SDK popup origins are rewritten when `VITE_C8_SPA_PROXY_ORIGIN` is set; otherwise use **local proxy** on `/cantor8/` (`network: "local"` → `http://localhost:8081`). Query `?c8u=mainnet|devnet` selects upstream. WebAuthn RP ID follows the proxy hostname (separate from production wallet passkeys).
-- **Health API:** `GET /api/cantor8-embed-health?network=mainnet|devnet|local` reports whether `/embedded/` is reachable (used by the page banner; Connect is disabled when not OK).
-- **Tests:** `scripts/c8-embed-smoke.test.mjs` (public 404 + proxy 200) and `scripts/c8-handshake-e2e.test.mjs` (Playwright handshake-ack against the proxy).
+- **Same-origin SPA proxy:** production and `yarn dev` serve the wallet under `/__c8/*` via [`middleware.js`](../middleware.js) (Vercel) / Vite middleware, with SPA fallback for `/embedded/`. SDK mainnet/devnet popups open `${location.origin}/__c8/embedded/?c8u=…`. Optional **local proxy** (`yarn c8:proxy`, network `local` → `http://localhost:8081`) or `VITE_C8_SPA_PROXY_ORIGIN` still work. WebAuthn RP ID follows the popup hostname (dApp origin when using `/__c8`).
+- **Health API:** `GET /api/cantor8-embed-health?network=mainnet|devnet|local` checks the active embed URL (used by the page banner; Connect is disabled when not OK).
+- **Tests:** `scripts/c8-embed-smoke.test.mjs` + `scripts/c8-handshake-e2e.test.mjs` (standalone proxy) and `scripts/c8-same-origin-proxy.test.mjs` (Vite preview `/__c8`).
 
 Phase B (`signAndExecute`) is implemented on the same `/cantor8/` page.
 

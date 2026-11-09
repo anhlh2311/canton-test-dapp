@@ -235,9 +235,8 @@ export function Cantor8Page({
           <a href={CANTOR8_WALLET_URL} target="_blank" rel="noreferrer">
             wallet.cantor8.tech
           </a>
-          ). Public hosts 404 <code>/embedded/</code> — use <b>local proxy</b> (
-          <code>yarn c8:proxy</code>) or set <code>VITE_C8_SPA_PROXY_ORIGIN</code> to a deployed{' '}
-          <code>c8-proxy/</code>.
+          ). Public hosts 404 <code>/embedded/</code>; this dApp proxies via same-origin{' '}
+          <code>/__c8/embedded/</code> (or <b>local proxy</b> / <code>yarn c8:proxy</code>).
         </p>
         <p
           className="hint"
@@ -253,7 +252,7 @@ export function Cantor8Page({
             ? 'Checking /embedded/ reachability…'
             : embedHealth.ok
               ? `Embed OK (HTTP ${embedHealth.status}). Connect should open the approval popup.`
-              : `Embed NOT OK (HTTP ${embedHealth.status ?? 'n/a'}). ${embedHealth.hint ?? ''} Switch to local proxy after yarn c8:proxy — opening / alone shows Passkey UI and never handshakes.`}
+              : `Embed NOT OK (HTTP ${embedHealth.status ?? 'n/a'}). ${embedHealth.hint ?? ''}`}
         </p>
       </section>
 

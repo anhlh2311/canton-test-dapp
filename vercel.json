@@ -1,6 +1,9 @@
 {
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
+    {
+      "source": "/((?!api/|__c8(?:/|$)|_expo/|embedded(?:/|$)|setup(?:/|$)|trade(?:/|$)).*)",
+      "destination": "/index.html"
+    }
   ]
 }

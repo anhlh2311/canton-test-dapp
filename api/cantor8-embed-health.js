@@ -1,22 +1,26 @@
 /**
- * Server-side check: does the Cantor8 wallet host (or SPA proxy) serve /embedded/ ?
+ * Server-side check: can this deployment serve /__c8/embedded/ (same-origin SPA proxy)?
  */
 export default async function handler(req, res) {
   const network = String(req.query?.network ?? 'mainnet');
-  const proxy = String(process.env.VITE_C8_SPA_PROXY_ORIGIN ?? '')
+  const external = String(process.env.VITE_C8_SPA_PROXY_ORIGIN ?? '')
     .trim()
     .replace(/\/$/, '');
+
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '');
+  const proto = String(req.headers['x-forwarded-proto'] || 'https');
+  const selfOrigin = host ? `${proto}://${host}` : '';
+
   const origin =
     network === 'local'
-      ? proxy || 'http://localhost:8081'
-      : proxy
-        ? proxy
-        : network === 'devnet'
-          ? 'https://wallet.dev.digik.cantor8.tech'
-          : 'https://wallet.cantor8.tech';
+      ? external || 'http://localhost:8081'
+      : external || selfOrigin || 'http://localhost:5180';
+
   const c8u = network === 'devnet' ? 'devnet' : 'mainnet';
-  const usingProxy = Boolean(proxy) || network === 'local';
-  const embedUrl = usingProxy ? `${origin}/embedded/?c8u=${c8u}` : `${origin}/embedded/`;
+  const local = /^https?:\/\/(localhost|127\.0\.0\.1):8081$/.test(origin);
+  const embedUrl = local
+    ? `${origin}/embedded/?c8u=${c8u}`
+    : `${origin}/__c8/embedded/?c8u=${c8u}`;
 
   try {
     const response = await fetch(embedUrl, {
@@ -24,18 +28,23 @@ export default async function handler(req, res) {
       redirect: 'manual',
       headers: { Accept: 'text/html', 'User-Agent': 'canton-test-dapp-embed-health' },
     });
-    const ok = response.status >= 200 && response.status < 300;
+    const body = await response.text();
+    const looksLikeWallet =
+      response.status >= 200 &&
+      response.status < 300 &&
+      /id=["']root["']/.test(body) &&
+      /_expo\/static\/js\/web\/entry-/.test(body);
     res.setHeader('cache-control', 'no-store');
     res.status(200).json({
-      ok,
+      ok: looksLikeWallet,
       status: response.status,
       network,
       origin,
       embedUrl,
-      proxy: usingProxy,
-      hint: ok
-        ? 'Wallet embed route is reachable.'
-        : 'Host returns non-OK for /embedded/. C8 Wallet Connect SDK connect() needs SPA fallback (try_files → index.html) — run yarn c8:proxy or deploy c8-proxy/.',
+      proxy: true,
+      hint: looksLikeWallet
+        ? 'Same-origin /__c8 SPA proxy is serving the wallet embed route.'
+        : 'Same-origin /__c8 proxy did not return the wallet SPA. Check middleware.js deployment.',
     });
   } catch (err) {
     res.status(200).json({
@@ -44,9 +53,9 @@ export default async function handler(req, res) {
       network,
       origin,
       embedUrl,
-      proxy: usingProxy,
+      proxy: true,
       error: err instanceof Error ? err.message : String(err),
-      hint: 'Failed to reach wallet embed URL.',
+      hint: 'Failed to reach same-origin wallet embed URL.',
     });
   }
 }
