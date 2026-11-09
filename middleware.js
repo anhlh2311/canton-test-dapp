@@ -110,7 +110,7 @@ function stripHopByHop(headers) {
   return out;
 }
 
-async function proxyToWallet(request, upstreamPath, upstreamBase, setCookies) {
+async function proxyToWallet(request, upstreamPath, upstreamBase, setCookies, stripPrefix) {
   const target = new URL(upstreamPath, `${upstreamBase}/`);
   target.searchParams.delete('c8u');
 
@@ -153,7 +153,24 @@ async function proxyToWallet(request, upstreamPath, upstreamBase, setCookies) {
   if (request.method === 'HEAD') {
     return new Response(null, { status: servedFallback ? 200 : upstreamRes.status, headers });
   }
-  return new Response(await upstreamRes.arrayBuffer(), {
+
+  let body = await upstreamRes.arrayBuffer();
+  // Expo Router matches /embedded, not /__c8/embedded — rewrite the visible path
+  // before the wallet app boots so MessageListener mounts and handshake can complete.
+  const ct = headers.get('content-type') ?? '';
+  if (stripPrefix && (servedFallback || ct.includes('text/html'))) {
+    const html = new TextDecoder().decode(body);
+    const snippet =
+      '<script>(function(){try{var p=location.pathname;if(p==="/__c8"||p.indexOf("/__c8/")===0){var n=p==="/__c8"?"/":p.slice(5)||"/";history.replaceState(null,"",n+location.search+location.hash)}}catch(e){}})();</script>';
+    const rewritten = /<head[\s>]/i.test(html)
+      ? html.replace(/<head([^>]*)>/i, `<head$1>${snippet}`)
+      : snippet + html;
+    body = new TextEncoder().encode(rewritten);
+    headers.set('content-type', 'text/html; charset=utf-8');
+    headers.delete('content-length');
+  }
+
+  return new Response(body, {
     status: servedFallback ? 200 : upstreamRes.status,
     headers,
   });
@@ -178,8 +195,10 @@ export default async function middleware(request) {
 
   const setCookies = [];
   let upstreamPath = `${pathname}${search}`;
+  let stripPrefix = false;
 
   if (pathname === PREFIX || pathname.startsWith(`${PREFIX}/`)) {
+    stripPrefix = true;
     const stripped = pathname === PREFIX ? '/' : pathname.slice(PREFIX.length) || '/';
     upstreamPath = `${stripped}${search}`;
     const c8u =
@@ -200,7 +219,7 @@ export default async function middleware(request) {
     );
   }
 
-  return proxyToWallet(request, upstreamPath, upstream, setCookies);
+  return proxyToWallet(request, upstreamPath, upstream, setCookies, stripPrefix);
 }
 
 export const config = {

@@ -71,6 +71,8 @@ test('vite preview /__c8/embedded/ returns wallet SPA via same-origin proxy', as
   const html = await res.text();
   assert.match(html, /id=["']root["']/);
   assert.match(html, /_expo\/static\/js\/web\/entry-/);
+  assert.match(html, /history\.replaceState/);
+  assert.match(html, /\/__c8/);
 
   // Cookie-gated asset proxy: /_expo should work after visiting /__c8
   const cookie = res.headers.getSetCookie?.()?.join('; ') ?? res.headers.get('set-cookie') ?? '';

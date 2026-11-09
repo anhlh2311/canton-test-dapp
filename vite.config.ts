@@ -67,7 +67,9 @@ function cantor8SameOriginProxyPlugin(): Plugin {
 
       let pathname = url.pathname;
       const setCookies: string[] = [];
+      let stripC8Prefix = false;
       if (pathname === PREFIX || pathname.startsWith(`${PREFIX}/`)) {
+        stripC8Prefix = true;
         pathname = pathname === PREFIX ? '/' : pathname.slice(PREFIX.length) || '/';
         const fromQuery = url.searchParams.get('c8u');
         const normalized =
@@ -92,6 +94,7 @@ function cantor8SameOriginProxyPlugin(): Plugin {
         acceptHeader: req.headers.accept,
         userAgent: req.headers['user-agent'],
         defaultUpstream: upstream,
+        stripC8Prefix,
       });
 
       res.statusCode = result.status;

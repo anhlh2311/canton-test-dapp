@@ -42,6 +42,20 @@ const STATIC_EXT =
   /\.(wasm|data|mem|js|mjs|css|map|png|jpg|jpeg|gif|webp|svg|ico|woff2?|ttf|otf|json)$/i;
 
 /**
+ * Expo Router reads location.pathname. When the popup is opened under /__c8/embedded/,
+ * strip that prefix before the wallet app boots so routes match /embedded (MessageListener).
+ * @param {string} html
+ */
+export function injectC8PathStripScript(html) {
+  const snippet =
+    '<script>(function(){try{var p=location.pathname;if(p==="/__c8"||p.indexOf("/__c8/")===0){var n=p==="/__c8"?"/":p.slice(5)||"/";history.replaceState(null,"",n+location.search+location.hash)}}catch(e){}})();</script>';
+  if (/<head[\s>]/i.test(html)) {
+    return html.replace(/<head([^>]*)>/i, `<head$1>${snippet}`);
+  }
+  return snippet + html;
+}
+
+/**
  * @param {import('http').IncomingMessage | Request} req
  * @param {string} pathname
  */
@@ -130,6 +144,7 @@ export async function fetchUpstream(upstreamBase, pathWithQuery, reqHeaders) {
  *   acceptHeader?: string | null,
  *   userAgent?: string | null,
  *   defaultUpstream?: string,
+ *   stripC8Prefix?: boolean,
  * }} opts
  */
 export async function proxySpaRequest(opts) {
@@ -189,10 +204,19 @@ export async function proxySpaRequest(opts) {
     headers['set-cookie'] = setCookie;
   }
 
+  let body = upstreamRes.buf;
+  // Optional: strip /__c8 for Expo when caller requests it (Vite same-origin proxy).
+  if (opts.stripC8Prefix && doc && body.length > 0) {
+    const html = injectC8PathStripScript(body.toString('utf8'));
+    body = Buffer.from(html, 'utf8');
+    headers['content-type'] = 'text/html; charset=utf-8';
+    delete headers['content-length'];
+  }
+
   return {
     status: upstreamRes.status,
     headers,
-    body: upstreamRes.buf,
+    body,
     upstream,
     servedFallback,
     pathWithQuery,
