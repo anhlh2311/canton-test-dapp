@@ -1,6 +1,7 @@
 /**
  * Shared SPA-fallback reverse-proxy for Cantor8's hosted wallet.
  * Public Caddy hosts 404 /embedded/; this returns /index.html for document 404s.
+ * Also same-origin API proxy for wallet-backend.* (mainnet CORS blocks the dApp origin).
  */
 import { URL } from 'node:url';
 
@@ -11,6 +12,7 @@ export const UPSTREAMS = {
 };
 
 export const COOKIE_NAME = 'c8u';
+export const API_PROXY_PREFIX = '/__c8api/h/';
 
 /**
  * @param {string | null | undefined} value
@@ -55,18 +57,56 @@ export function wasmRootFallbackPath(pathname) {
   return pathname === root ? null : root;
 }
 
+/** @param {string} host */
+export function isAllowedC8ApiHost(host) {
+  return /^wallet-backend\.[a-z0-9.-]+\.cantor8\.tech$/i.test(String(host || ''));
+}
+
+/** Origin the backend CORS allowlist accepts (dApp origin is rejected on mainnet). */
+export function spoofOriginForApiHost(host) {
+  const h = String(host || '').toLowerCase();
+  if (h.includes('.dev.')) return 'https://wallet.dev.digik.cantor8.tech';
+  return 'https://wallet.cantor8.tech';
+}
+
 /**
- * Expo Router reads location.pathname. When the popup is opened under /__c8/embedded/,
- * strip that prefix before the wallet app boots so routes match /embedded (MessageListener).
+ * @param {string} pathname
+ * @returns {{ host: string, path: string } | null}
+ */
+export function parseApiProxyPath(pathname) {
+  if (!pathname.startsWith(API_PROXY_PREFIX)) return null;
+  const rest = pathname.slice(API_PROXY_PREFIX.length);
+  if (!rest) return null;
+  const slash = rest.indexOf('/');
+  const host = slash === -1 ? rest : rest.slice(0, slash);
+  const path = slash === -1 ? '/' : rest.slice(slash);
+  if (!isAllowedC8ApiHost(host)) return null;
+  return { host, path };
+}
+
+/**
+ * Bridge injected into proxied wallet HTML:
+ * 1) Strip /__c8 so Expo Router matches /embedded
+ * 2) Rewrite wallet-backend.* fetches to same-origin /__c8api/h/... (CORS bypass)
+ */
+export function c8WalletBridgeScript() {
+  return `<script>(function(){try{var p=location.pathname;if(p==="/__c8"||p.indexOf("/__c8/")===0){var n=p==="/__c8"?"/":p.slice(5)||"/";history.replaceState(null,"",n+location.search+location.hash)}}catch(e){}try{var P="/__c8api/h/";var RE=/^https:\\/\\/(wallet-backend\\.[a-z0-9.-]+\\.cantor8\\.tech)(\\/.*)?$/i;function rewrite(u){try{if(typeof u==="string"){var m=u.match(RE);return m?P+m[1]+(m[2]||"/"):u}if(u&&typeof Request!=="undefined"&&u instanceof Request){var m2=u.url.match(RE);return m2?new Request(P+m2[1]+(m2[2]||"/"),u):u}}catch(e){}return u}var of=window.fetch;window.fetch=function(i,init){return of.call(this,rewrite(i),init)};var xo=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){var a=[].slice.call(arguments);if(typeof a[1]==="string")a[1]=rewrite(a[1]);return xo.apply(this,a)}}catch(e){}})();</script>`;
+}
+
+/**
  * @param {string} html
  */
-export function injectC8PathStripScript(html) {
-  const snippet =
-    '<script>(function(){try{var p=location.pathname;if(p==="/__c8"||p.indexOf("/__c8/")===0){var n=p==="/__c8"?"/":p.slice(5)||"/";history.replaceState(null,"",n+location.search+location.hash)}}catch(e){}})();</script>';
+export function injectC8WalletBridgeScript(html) {
+  const snippet = c8WalletBridgeScript();
   if (/<head[\s>]/i.test(html)) {
     return html.replace(/<head([^>]*)>/i, `<head$1>${snippet}`);
   }
   return snippet + html;
+}
+
+/** @deprecated use injectC8WalletBridgeScript */
+export function injectC8PathStripScript(html) {
+  return injectC8WalletBridgeScript(html);
 }
 
 /**
@@ -103,7 +143,9 @@ export function copyProxyHeaders(upstreamHeaders, statusForBody) {
       k === 'connection' ||
       k === 'content-security-policy' ||
       k === 'x-frame-options' ||
-      k === 'set-cookie'
+      k === 'set-cookie' ||
+      k === 'access-control-allow-origin' ||
+      k === 'access-control-allow-credentials'
     ) {
       return;
     }
@@ -121,8 +163,9 @@ export function copyProxyHeaders(upstreamHeaders, statusForBody) {
  * @param {string} upstreamBase
  * @param {string} pathWithQuery
  * @param {Record<string, string | string[] | undefined> | Headers} reqHeaders
+ * @param {{ method?: string, body?: ArrayBuffer | Buffer | null }} [opts]
  */
-export async function fetchUpstream(upstreamBase, pathWithQuery, reqHeaders) {
+export async function fetchUpstream(upstreamBase, pathWithQuery, reqHeaders, opts = {}) {
   const target = new URL(pathWithQuery, upstreamBase.endsWith('/') ? upstreamBase : `${upstreamBase}/`);
   /** @type {Record<string, string>} */
   const headers = {};
@@ -142,12 +185,71 @@ export async function fetchUpstream(upstreamBase, pathWithQuery, reqHeaders) {
   delete headers['cookie'];
 
   const res = await fetch(target, {
-    method: 'GET',
+    method: opts.method ?? 'GET',
     headers,
+    body: opts.body ?? undefined,
     redirect: 'manual',
   });
   const buf = Buffer.from(await res.arrayBuffer());
   return { status: res.status, headers: res.headers, buf, url: target.toString() };
+}
+
+/**
+ * Same-origin reverse proxy for wallet-backend.* (AppConfig etc.).
+ * @param {{
+ *   pathname: string,
+ *   search?: string,
+ *   method?: string,
+ *   acceptHeader?: string | null,
+ *   userAgent?: string | null,
+ *   contentType?: string | null,
+ *   authorization?: string | null,
+ *   body?: ArrayBuffer | Buffer | null,
+ * }} opts
+ */
+export async function proxyApiRequest(opts) {
+  const parsed = parseApiProxyPath(opts.pathname);
+  if (!parsed) {
+    return {
+      status: 404,
+      headers: {
+        'content-type': 'text/plain; charset=utf-8',
+        'cache-control': 'no-store',
+        'x-c8-spa-proxy': '1',
+        'x-c8-spa-proxy-status': 'api-host-denied',
+      },
+      body: Buffer.from('c8 api proxy: host not allowed'),
+    };
+  }
+
+  const search = opts.search ?? '';
+  const pathWithQuery = `${parsed.path}${search}`;
+  const spoofOrigin = spoofOriginForApiHost(parsed.host);
+  const reqHeaders = {
+    accept: opts.acceptHeader ?? 'application/json,*/*',
+    'user-agent': opts.userAgent ?? 'c8-spa-proxy',
+    origin: spoofOrigin,
+    referer: `${spoofOrigin}/`,
+  };
+  if (opts.contentType) reqHeaders['content-type'] = opts.contentType;
+  if (opts.authorization) reqHeaders.authorization = opts.authorization;
+
+  const method = (opts.method ?? 'GET').toUpperCase();
+  const upstreamRes = await fetchUpstream(`https://${parsed.host}`, pathWithQuery, reqHeaders, {
+    method,
+    body: method === 'GET' || method === 'HEAD' ? null : opts.body ?? null,
+  });
+
+  const headers = copyProxyHeaders(upstreamRes.headers, 'api-proxy');
+  headers['x-c8-spa-proxy-upstream'] = `https://${parsed.host}`;
+  headers['x-c8-api-spoof-origin'] = spoofOrigin;
+
+  return {
+    status: upstreamRes.status,
+    headers,
+    body: upstreamRes.buf,
+    host: parsed.host,
+  };
 }
 
 /**
@@ -159,6 +261,7 @@ export async function fetchUpstream(upstreamBase, pathWithQuery, reqHeaders) {
  *   userAgent?: string | null,
  *   defaultUpstream?: string,
  *   stripC8Prefix?: boolean,
+ *   injectBridge?: boolean,
  * }} opts
  */
 export async function proxySpaRequest(opts) {
@@ -236,9 +339,11 @@ export async function proxySpaRequest(opts) {
   }
 
   let body = upstreamRes.buf;
-  // Optional: strip /__c8 for Expo when caller requests it (Vite same-origin proxy).
-  if (opts.stripC8Prefix && doc && body.length > 0) {
-    const html = injectC8PathStripScript(body.toString('utf8'));
+  const ct = headers['content-type'] ?? '';
+  const isHtml = proxyStatus === 'fallback-index' || ct.includes('text/html');
+  // Always inject path-strip + API rewrite into wallet HTML (CORS bypass for AppConfig).
+  if (opts.injectBridge !== false && isHtml && body.length > 0) {
+    const html = injectC8WalletBridgeScript(body.toString('utf8'));
     body = Buffer.from(html, 'utf8');
     headers['content-type'] = 'text/html; charset=utf-8';
     delete headers['content-length'];

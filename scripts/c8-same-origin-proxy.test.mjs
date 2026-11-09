@@ -73,6 +73,8 @@ test('vite preview /__c8/embedded/ returns wallet SPA via same-origin proxy', as
   assert.match(html, /_expo\/static\/js\/web\/entry-/);
   assert.match(html, /history\.replaceState/);
   assert.match(html, /\/__c8/);
+  assert.match(html, /__c8api\/h\//);
+  assert.match(html, /wallet-backend/);
 
   // Cookie-gated asset proxy: /_expo should work after visiting /__c8
   const cookie = res.headers.getSetCookie?.()?.join('; ') ?? res.headers.get('set-cookie') ?? '';
@@ -107,4 +109,14 @@ test('vite preview /__c8/embedded/ returns wallet SPA via same-origin proxy', as
     '\0asm',
     `expected nested wasm remap magic, got ${nestedBuf.subarray(0, 8)}`,
   );
+
+  // Mainnet wallet-backend CORS blocks the dApp origin — AppConfig must go through /__c8api.
+  const api = await fetch(
+    `${BASE}/__c8api/h/wallet-backend.main.digik.cantor8.tech/api/config/version_v2`,
+    { headers: { accept: 'application/json' } },
+  );
+  assert.equal(api.status, 200);
+  assert.equal(api.headers.get('x-c8-spa-proxy-status'), 'api-proxy');
+  const cfg = await api.json();
+  assert.ok(cfg.app_min_version || cfg.app_max_version, 'expected AppConfig JSON');
 });

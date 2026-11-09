@@ -7,6 +7,10 @@
  * absolute navigations and root static assets (e.g. /canvaskit.wasm).
  * Nested wasm (e.g. /embedded/canvaskit.wasm) 404s on the wallet host — CanvasKit
  * resolves relative to /embedded/ after path-strip; we fall back to /canvaskit.wasm.
+ *
+ * Wallet-backend APIs CORS-allow only wallet.* origins (mainnet rejects this dApp).
+ * Injected bridge rewrites those fetches to /__c8api/h/{host}/… which we proxy with
+ * a spoofed wallet Origin.
  */
 const UPSTREAMS = {
   mainnet: 'https://wallet.cantor8.tech',
@@ -16,6 +20,7 @@ const UPSTREAMS = {
 const C8U_COOKIE = 'c8u';
 const C8_PROXY_COOKIE = 'c8_proxy';
 const PREFIX = '/__c8';
+const API_PREFIX = '/__c8api/h/';
 
 /** Static extensions that belong to the wallet popup (never SPA-fallback). */
 const WALLET_STATIC_EXT =
@@ -100,7 +105,9 @@ function stripHopByHop(headers) {
       k === 'connection' ||
       k === 'content-security-policy' ||
       k === 'x-frame-options' ||
-      k === 'set-cookie'
+      k === 'set-cookie' ||
+      k === 'access-control-allow-origin' ||
+      k === 'access-control-allow-credentials'
     ) {
       return;
     }
@@ -121,7 +128,76 @@ function wasmRootFallbackPath(pathname) {
   return pathname === root ? null : root;
 }
 
-async function proxyToWallet(request, upstreamPath, upstreamBase, setCookies, stripPrefix) {
+function isAllowedC8ApiHost(host) {
+  return /^wallet-backend\.[a-z0-9.-]+\.cantor8\.tech$/i.test(String(host || ''));
+}
+
+function spoofOriginForApiHost(host) {
+  const h = String(host || '').toLowerCase();
+  if (h.includes('.dev.')) return 'https://wallet.dev.digik.cantor8.tech';
+  return 'https://wallet.cantor8.tech';
+}
+
+function c8WalletBridgeScript() {
+  return `<script>(function(){try{var p=location.pathname;if(p==="/__c8"||p.indexOf("/__c8/")===0){var n=p==="/__c8"?"/":p.slice(5)||"/";history.replaceState(null,"",n+location.search+location.hash)}}catch(e){}try{var P="/__c8api/h/";var RE=/^https:\\/\\/(wallet-backend\\.[a-z0-9.-]+\\.cantor8\\.tech)(\\/.*)?$/i;function rewrite(u){try{if(typeof u==="string"){var m=u.match(RE);return m?P+m[1]+(m[2]||"/"):u}if(u&&typeof Request!=="undefined"&&u instanceof Request){var m2=u.url.match(RE);return m2?new Request(P+m2[1]+(m2[2]||"/"),u):u}}catch(e){}return u}var of=window.fetch;window.fetch=function(i,init){return of.call(this,rewrite(i),init)};var xo=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){var a=[].slice.call(arguments);if(typeof a[1]==="string")a[1]=rewrite(a[1]);return xo.apply(this,a)}}catch(e){}})();</script>`;
+}
+
+async function proxyWalletApi(request) {
+  const url = new URL(request.url);
+  if (!url.pathname.startsWith(API_PREFIX)) {
+    return new Response('c8 api proxy: bad path', { status: 404 });
+  }
+  const rest = url.pathname.slice(API_PREFIX.length);
+  const slash = rest.indexOf('/');
+  const host = slash === -1 ? rest : rest.slice(0, slash);
+  const path = slash === -1 ? '/' : rest.slice(slash);
+  if (!isAllowedC8ApiHost(host)) {
+    return new Response('c8 api proxy: host not allowed', {
+      status: 404,
+      headers: { 'x-c8-spa-proxy-status': 'api-host-denied' },
+    });
+  }
+
+  const spoofOrigin = spoofOriginForApiHost(host);
+  const target = new URL(`${path}${url.search}`, `https://${host}/`);
+  const forwardHeaders = new Headers();
+  const accept = request.headers.get('accept');
+  const ua = request.headers.get('user-agent');
+  const contentType = request.headers.get('content-type');
+  const authorization = request.headers.get('authorization');
+  if (accept) forwardHeaders.set('accept', accept);
+  if (ua) forwardHeaders.set('user-agent', ua);
+  if (contentType) forwardHeaders.set('content-type', contentType);
+  if (authorization) forwardHeaders.set('authorization', authorization);
+  forwardHeaders.set('origin', spoofOrigin);
+  forwardHeaders.set('referer', `${spoofOrigin}/`);
+
+  const method = request.method.toUpperCase();
+  const init = {
+    method,
+    headers: forwardHeaders,
+    redirect: 'manual',
+  };
+  if (method !== 'GET' && method !== 'HEAD') {
+    init.body = await request.arrayBuffer();
+  }
+
+  const upstreamRes = await fetch(target, init);
+  const headers = stripHopByHop(upstreamRes.headers);
+  headers.set('x-c8-spa-proxy-status', 'api-proxy');
+  headers.set('x-c8-spa-proxy-upstream', `https://${host}`);
+  headers.set('x-c8-api-spoof-origin', spoofOrigin);
+
+  if (method === 'HEAD') {
+    return new Response(null, { status: upstreamRes.status, headers });
+  }
+  return new Response(await upstreamRes.arrayBuffer(), {
+    status: upstreamRes.status,
+    headers,
+  });
+}
+
+async function proxyToWallet(request, upstreamPath, upstreamBase, setCookies) {
   const target = new URL(upstreamPath, `${upstreamBase}/`);
   target.searchParams.delete('c8u');
 
@@ -185,13 +261,12 @@ async function proxyToWallet(request, upstreamPath, upstreamBase, setCookies, st
   }
 
   let body = await upstreamRes.arrayBuffer();
-  // Expo Router matches /embedded, not /__c8/embedded — rewrite the visible path
-  // before the wallet app boots so MessageListener mounts and handshake can complete.
+  // Expo path-strip + wallet-backend fetch rewrite before the wallet app boots.
   const ct = headers.get('content-type') ?? '';
-  if (stripPrefix && (proxyStatus === 'fallback-index' || ct.includes('text/html'))) {
+  const isHtml = proxyStatus === 'fallback-index' || ct.includes('text/html');
+  if (isHtml) {
     const html = new TextDecoder().decode(body);
-    const snippet =
-      '<script>(function(){try{var p=location.pathname;if(p==="/__c8"||p.indexOf("/__c8/")===0){var n=p==="/__c8"?"/":p.slice(5)||"/";history.replaceState(null,"",n+location.search+location.hash)}}catch(e){}})();</script>';
+    const snippet = c8WalletBridgeScript();
     const rewritten = /<head[\s>]/i.test(html)
       ? html.replace(/<head([^>]*)>/i, `<head$1>${snippet}`)
       : snippet + html;
@@ -207,12 +282,18 @@ async function proxyToWallet(request, upstreamPath, upstreamBase, setCookies, st
 }
 
 export default async function middleware(request) {
+  const url = new URL(request.url);
+  const { pathname, search } = url;
+
+  // API proxy: all methods (wallet AppConfig / vault calls).
+  if (pathname.startsWith('/__c8api/')) {
+    return proxyWalletApi(request);
+  }
+
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     return;
   }
 
-  const url = new URL(request.url);
-  const { pathname, search } = url;
   const cookieHeader = request.headers.get('cookie') ?? '';
   const hasProxyCookie = readCookie(cookieHeader, C8_PROXY_COOKIE) === '1';
   const fromQuery = url.searchParams.get('c8u');
@@ -225,10 +306,8 @@ export default async function middleware(request) {
 
   const setCookies = [];
   let upstreamPath = `${pathname}${search}`;
-  let stripPrefix = false;
 
   if (pathname === PREFIX || pathname.startsWith(`${PREFIX}/`)) {
-    stripPrefix = true;
     const stripped = pathname === PREFIX ? '/' : pathname.slice(PREFIX.length) || '/';
     upstreamPath = `${stripped}${search}`;
     const c8u =
@@ -249,7 +328,7 @@ export default async function middleware(request) {
     );
   }
 
-  return proxyToWallet(request, upstreamPath, upstream, setCookies, stripPrefix);
+  return proxyToWallet(request, upstreamPath, upstream, setCookies);
 }
 
 export const config = {
@@ -257,6 +336,8 @@ export const config = {
   matcher: [
     '/__c8',
     '/__c8/:path*',
+    '/__c8api',
+    '/__c8api/:path*',
     '/_expo/:path*',
     '/embedded',
     '/embedded/:path*',

@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import { cantor8SdkProxyPlugin } from './src/viteCantor8SdkPlugin';
 import {
   proxySpaRequest,
+  proxyApiRequest,
   resolveUpstream,
   UPSTREAMS,
   COOKIE_NAME,
@@ -11,6 +12,7 @@ import {
 
 const PREFIX = '/__c8';
 const C8_PROXY_COOKIE = 'c8_proxy';
+const API_PREFIX = '/__c8api/';
 
 function isDappPath(pathname: string): boolean {
   if (pathname === '/' || pathname === '/index.html') return true;
@@ -53,12 +55,44 @@ function shouldProxy(pathname: string, hasProxyCookie: boolean): boolean {
 function cantor8SameOriginProxyPlugin(): Plugin {
   const handler: Connect.NextHandleFunction = async (req, res, next) => {
     try {
+      const host = req.headers.host || 'localhost:5180';
+      const url = new URL(req.url || '/', `http://${host}`);
+
+      if (url.pathname.startsWith(API_PREFIX)) {
+        const chunks: Buffer[] = [];
+        if (req.method !== 'GET' && req.method !== 'HEAD') {
+          await new Promise<void>((resolve, reject) => {
+            req.on('data', (c) => chunks.push(Buffer.from(c)));
+            req.on('end', () => resolve());
+            req.on('error', reject);
+          });
+        }
+        const result = await proxyApiRequest({
+          pathname: url.pathname,
+          search: url.search,
+          method: req.method,
+          acceptHeader: req.headers.accept,
+          userAgent: req.headers['user-agent'],
+          contentType: typeof req.headers['content-type'] === 'string' ? req.headers['content-type'] : null,
+          authorization: typeof req.headers.authorization === 'string' ? req.headers.authorization : null,
+          body: chunks.length ? Buffer.concat(chunks) : null,
+        });
+        res.statusCode = result.status;
+        for (const [key, value] of Object.entries(result.headers)) {
+          res.setHeader(key, value);
+        }
+        if (req.method === 'HEAD') {
+          res.end();
+          return;
+        }
+        res.end(result.body);
+        return;
+      }
+
       if (req.method !== 'GET' && req.method !== 'HEAD') {
         next();
         return;
       }
-      const host = req.headers.host || 'localhost:5180';
-      const url = new URL(req.url || '/', `http://${host}`);
       const hasProxyCookie = readCookie(req.headers.cookie, C8_PROXY_COOKIE) === '1';
       if (!shouldProxy(url.pathname, hasProxyCookie)) {
         next();
@@ -95,6 +129,7 @@ function cantor8SameOriginProxyPlugin(): Plugin {
         userAgent: req.headers['user-agent'],
         defaultUpstream: upstream,
         stripC8Prefix,
+        injectBridge: true,
       });
 
       res.statusCode = result.status;

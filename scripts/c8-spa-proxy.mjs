@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Reverse-proxy Cantor8's hosted wallet with SPA fallback.
+ * Reverse-proxy Cantor8's hosted wallet with SPA fallback + API CORS bridge.
  *
  *   yarn c8:proxy
  *   C8_UPSTREAM=https://wallet.dev.digik.cantor8.tech C8_PROXY_PORT=8081 yarn c8:proxy
@@ -9,20 +9,54 @@
  */
 import http from 'node:http';
 import { URL } from 'node:url';
-import { proxySpaRequest, resolveUpstream, UPSTREAMS } from './c8-spa-proxy-lib.mjs';
+import {
+  proxySpaRequest,
+  proxyApiRequest,
+  resolveUpstream,
+  UPSTREAMS,
+} from './c8-spa-proxy-lib.mjs';
 
 const DEFAULT_UPSTREAM = resolveUpstream(process.env.C8_UPSTREAM, UPSTREAMS.mainnet);
 const PORT = Number(process.env.C8_PROXY_PORT ?? 8081);
 
 const server = http.createServer(async (req, res) => {
   try {
+    const url = new URL(req.url || '/', `http://127.0.0.1:${PORT}`);
+
+    if (url.pathname.startsWith('/__c8api/')) {
+      const chunks = [];
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        await new Promise((resolve, reject) => {
+          req.on('data', (c) => chunks.push(Buffer.from(c)));
+          req.on('end', () => resolve());
+          req.on('error', reject);
+        });
+      }
+      const result = await proxyApiRequest({
+        pathname: url.pathname,
+        search: url.search,
+        method: req.method,
+        acceptHeader: req.headers.accept,
+        userAgent: req.headers['user-agent'],
+        contentType: typeof req.headers['content-type'] === 'string' ? req.headers['content-type'] : null,
+        authorization: typeof req.headers.authorization === 'string' ? req.headers.authorization : null,
+        body: chunks.length ? Buffer.concat(chunks) : null,
+      });
+      res.writeHead(result.status, result.headers);
+      if (req.method === 'HEAD') {
+        res.end();
+        return;
+      }
+      res.end(result.body);
+      return;
+    }
+
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.writeHead(405, { allow: 'GET, HEAD' });
       res.end();
       return;
     }
 
-    const url = new URL(req.url || '/', `http://127.0.0.1:${PORT}`);
     const result = await proxySpaRequest({
       pathname: url.pathname,
       searchParams: url.searchParams,
@@ -30,6 +64,7 @@ const server = http.createServer(async (req, res) => {
       acceptHeader: req.headers.accept,
       userAgent: req.headers['user-agent'],
       defaultUpstream: DEFAULT_UPSTREAM,
+      injectBridge: true,
     });
 
     res.writeHead(result.status, result.headers);
