@@ -17,11 +17,16 @@ export function cantor8WalletOrigin(network) {
 
 /**
  * Official connect/approval popup URL (SDK `WALLET_EMBED_URL` = `/embedded`).
+ * Local / SPA-proxy origins append `?c8u=` so the proxy can pin upstream.
  * @param {'devnet' | 'mainnet' | 'local'} network
  * @returns {string}
  */
 export function cantor8WalletEmbedUrl(network) {
-  return `${cantor8WalletOrigin(network)}/embedded/`;
+  const origin = cantor8WalletOrigin(network);
+  if (network === 'local') {
+    return `${origin}/embedded/?c8u=mainnet`;
+  }
+  return `${origin}/embedded/`;
 }
 
 /**

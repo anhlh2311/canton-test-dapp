@@ -12,10 +12,10 @@ version `0.9.0`.
 - SDK documentation: [Cantor8 Wallet SDK](https://docs.cantor8.tech/wallet-sdk/introduction)
 - PartyLayer's `@partylayer/adapter-cantor8` path is **unchanged** — this page uses the SDK directly
 - **Connect popup path:** SDK `0.9.0` opens `${walletOrigin}/embedded/` (`WALLET_EMBED_URL`). The connection-approval UI (`MessageListener` + pending `connect` request) mounts only under that Expo Router tree — not on `/`.
-- **Hosting blocker (2026-11-09):** `wallet.cantor8.tech` and `wallet.dev.digik.cantor8.tech` are served by Caddy and return **HTTP 404** for `/embedded/` (only `/` and `/index.html` return the SPA). Until Cantor8 adds an SPA fallback (`try_files {path} /index.html`), `connect()` cannot show the approval screen. Opening `/` shows the Passkey landing page and leaves the dApp stuck on "connecting…".
-- **Local workaround:** `yarn c8:proxy` serves the real wallet through `http://localhost:8081` with SPA fallback; select **local proxy** on `/cantor8/` (SDK `network: "local"`). WebAuthn RP ID is `window.location.hostname`, so localhost passkeys are a separate identity from production.
-- **Health API:** `GET /api/cantor8-embed-health?network=mainnet|devnet|local` reports whether `/embedded/` is reachable (used by the page banner).
-- **Smoke test:** `yarn test` includes `scripts/c8-embed-smoke.test.mjs` (asserts public 404 + proxy 200).
+- **Hosting blocker (2026-11-09):** `wallet.cantor8.tech` and `wallet.dev.digik.cantor8.tech` are served by Caddy and return **HTTP 404** for `/embedded/` (only `/` and `/index.html` return the SPA). Until Cantor8 adds an SPA fallback (`try_files {path} /index.html`), a direct popup to those hosts cannot mount `MessageListener`. Opening `/` shows the Passkey landing page and leaves the dApp stuck on "connecting…".
+- **SPA proxy workaround:** `yarn c8:proxy` (or deploy [`c8-proxy/`](../c8-proxy/)) serves the real wallet with SPA fallback at origin root. SDK popup origins are rewritten when `VITE_C8_SPA_PROXY_ORIGIN` is set; otherwise use **local proxy** on `/cantor8/` (`network: "local"` → `http://localhost:8081`). Query `?c8u=mainnet|devnet` selects upstream. WebAuthn RP ID follows the proxy hostname (separate from production wallet passkeys).
+- **Health API:** `GET /api/cantor8-embed-health?network=mainnet|devnet|local` reports whether `/embedded/` is reachable (used by the page banner; Connect is disabled when not OK).
+- **Tests:** `scripts/c8-embed-smoke.test.mjs` (public 404 + proxy 200) and `scripts/c8-handshake-e2e.test.mjs` (Playwright handshake-ack against the proxy).
 
 Phase B (`signAndExecute`) is implemented on the same `/cantor8/` page.
 

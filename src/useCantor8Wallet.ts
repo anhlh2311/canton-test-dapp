@@ -9,6 +9,7 @@ import {
   CANTOR8_DAPP_NAME,
   describeCantor8Error,
 } from './cantor8Helpers.js';
+import { prepareCantor8ProxyHint } from './c8SdkOrigins.js';
 
 export type Cantor8Network = 'devnet' | 'mainnet' | 'local';
 export type Cantor8Status = 'idle' | 'connecting' | 'connected' | 'error';
@@ -247,6 +248,8 @@ export function useCantor8Wallet(
     setStatus('connecting');
     try {
       const c8 = ensureProvider(network);
+      // Hint SPA proxy (local or VITE_C8_SPA_PROXY_ORIGIN) which upstream to use.
+      prepareCantor8ProxyHint(network);
       // Must run from a user gesture (button click). Opens `${origin}/embedded/` per SDK 0.9.0.
       await c8.connect();
       const st = await c8.status();

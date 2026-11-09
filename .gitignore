@@ -24,3 +24,7 @@ yarn-error.log*
 # Git worktrees / local agent scratch
 .worktrees/
 .superpowers/
+.specstory/
+
+# Cantor8 handshake temp runner
+scripts/.c8-handshake-runner.tmp.mjs

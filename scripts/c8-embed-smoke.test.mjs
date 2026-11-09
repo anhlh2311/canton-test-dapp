@@ -56,8 +56,9 @@ test('SPA proxy serves /embedded/ as the wallet SPA (200 + root mount)', async (
 
   await waitForProxy();
 
-  const res = await fetch(`${PROXY}/embedded/`);
+  const res = await fetch(`${PROXY}/embedded/?c8u=mainnet`);
   assert.equal(res.status, 200);
+  assert.equal(res.headers.get('x-c8-spa-proxy'), '1');
   const html = await res.text();
   assert.match(html, /id=["']root["']/);
   assert.match(html, /_expo\/static\/js\/web\/entry-/);

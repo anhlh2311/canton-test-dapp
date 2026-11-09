@@ -1,5 +1,6 @@
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
+import { cantor8SdkProxyPlugin } from './src/viteCantor8SdkPlugin';
 
 /** Dev-only stand-in for /api/cantor8-embed-health (Vercel serverless in prod). */
 function cantor8EmbedHealthPlugin(): Plugin {
@@ -13,13 +14,18 @@ function cantor8EmbedHealthPlugin(): Plugin {
           return;
         }
         const network = new URL(url, 'http://localhost').searchParams.get('network') ?? 'mainnet';
+        const proxy = (process.env.VITE_C8_SPA_PROXY_ORIGIN ?? '').trim().replace(/\/$/, '');
         const origin =
-          network === 'devnet'
-            ? 'https://wallet.dev.digik.cantor8.tech'
-            : network === 'local'
-              ? 'http://localhost:8081'
-              : 'https://wallet.cantor8.tech';
-        const embedUrl = `${origin}/embedded/`;
+          network === 'local'
+            ? proxy || 'http://localhost:8081'
+            : proxy
+              ? proxy
+              : network === 'devnet'
+                ? 'https://wallet.dev.digik.cantor8.tech'
+                : 'https://wallet.cantor8.tech';
+        const c8u = network === 'devnet' ? 'devnet' : 'mainnet';
+        const embedUrl =
+          proxy || network === 'local' ? `${origin}/embedded/?c8u=${c8u}` : `${origin}/embedded/`;
         try {
           const response = await fetch(embedUrl, {
             method: 'GET',
@@ -36,9 +42,10 @@ function cantor8EmbedHealthPlugin(): Plugin {
               network,
               origin,
               embedUrl,
+              proxy: Boolean(proxy) || network === 'local',
               hint: ok
                 ? 'Wallet embed route is reachable.'
-                : 'Host returns non-OK for /embedded/. C8 Wallet Connect SDK connect() needs SPA fallback on this host.',
+                : 'Host returns non-OK for /embedded/. Run yarn c8:proxy and use local, or set VITE_C8_SPA_PROXY_ORIGIN.',
             }),
           );
         } catch (err) {
@@ -61,7 +68,7 @@ function cantor8EmbedHealthPlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), cantor8EmbedHealthPlugin()],
+  plugins: [react(), cantor8SdkProxyPlugin(), cantor8EmbedHealthPlugin()],
   server: {
     port: 5180,
   },

@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import './App.css';
 import { useCantor8Wallet, type Cantor8Status } from './useCantor8Wallet';
+import { CANTOR8_WALLET_URL } from './cantor8Helpers.js';
 import {
-  CANTOR8_WALLET_URL,
-  cantor8WalletEmbedUrl,
-  cantor8WalletOrigin,
-} from './cantor8Helpers.js';
+  resolveCantor8WalletEmbedUrl,
+  resolveCantor8WalletOrigin,
+} from './c8SdkOrigins.js';
 import { ConnectionModeNav } from './ConnectionModeNav';
 import type { Cantor8Network } from './useCantor8Wallet';
 
@@ -227,16 +227,17 @@ export function Cantor8Page({
         </div>
         <p className="hint">
           Active network: <b>{c8.network}</b>. Connect opens{' '}
-          <a href={cantor8WalletEmbedUrl(c8.network)} target="_blank" rel="noreferrer">
-            <code>{cantor8WalletEmbedUrl(c8.network)}</code>
+          <a href={resolveCantor8WalletEmbedUrl(c8.network)} target="_blank" rel="noreferrer">
+            <code>{resolveCantor8WalletEmbedUrl(c8.network)}</code>
           </a>{' '}
-          (SDK <code>WALLET_EMBED_URL=/embedded</code>). Origin{' '}
-          <code>{cantor8WalletOrigin(c8.network)}</code>. Default is mainnet (
+          (SDK <code>/embedded/</code>). Origin{' '}
+          <code>{resolveCantor8WalletOrigin(c8.network)}</code>. Default is mainnet (
           <a href={CANTOR8_WALLET_URL} target="_blank" rel="noreferrer">
             wallet.cantor8.tech
           </a>
-          ). Use <b>local proxy</b> after <code>yarn c8:proxy</code> to work around the public
-          host&apos;s missing SPA fallback.
+          ). Public hosts 404 <code>/embedded/</code> — use <b>local proxy</b> (
+          <code>yarn c8:proxy</code>) or set <code>VITE_C8_SPA_PROXY_ORIGIN</code> to a deployed{' '}
+          <code>c8-proxy/</code>.
         </p>
         <p
           className="hint"
@@ -252,7 +253,7 @@ export function Cantor8Page({
             ? 'Checking /embedded/ reachability…'
             : embedHealth.ok
               ? `Embed OK (HTTP ${embedHealth.status}). Connect should open the approval popup.`
-              : `Embed NOT OK (HTTP ${embedHealth.status ?? 'n/a'}). ${embedHealth.hint ?? ''} Public Caddy hosts currently 404 /embedded/; the Passkey home at / cannot complete SDK connect().`}
+              : `Embed NOT OK (HTTP ${embedHealth.status ?? 'n/a'}). ${embedHealth.hint ?? ''} Switch to local proxy after yarn c8:proxy — opening / alone shows Passkey UI and never handshakes.`}
         </p>
       </section>
 
@@ -267,7 +268,17 @@ export function Cantor8Page({
           </span>
         </div>
         <div className="button-row">
-          <button onClick={connected ? c8.disconnect : c8.connect} disabled={c8.status === 'connecting'}>
+          <button
+            onClick={connected ? c8.disconnect : c8.connect}
+            disabled={
+              c8.status === 'connecting' || (!connected && !embedHealth.loading && embedHealth.ok === false)
+            }
+            title={
+              !connected && embedHealth.ok === false
+                ? 'Embed route unreachable — start yarn c8:proxy and select local proxy'
+                : undefined
+            }
+          >
             {c8.status === 'connecting' ? 'Connecting…' : connected ? 'Disconnect' : 'Connect Cantor8'}
           </button>
         </div>
